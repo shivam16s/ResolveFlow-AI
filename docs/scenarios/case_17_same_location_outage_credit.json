@@ -1,0 +1,17 @@
+{
+  "scenario_id": "case_17_same_location_outage_credit",
+  "title": "Second customer affected by demo outage",
+  "customer_id": "CUST-1020",
+  "customer_messages": [
+    "My broadband in Chennai Zone-04 was down for most of yesterday."
+  ],
+  "expected_intents": ["service_outage"],
+  "required_tools": ["lookup_customer", "check_outage_status", "retrieve_policy", "apply_credit"],
+  "expected_policies": ["service_credit_policy"],
+  "should_escalate": false,
+  "success_criteria": [
+    "Matches customer location to OUT-CHN-04-20260520.",
+    "Uses verified 7 hour outage duration.",
+    "Applies only policy-eligible service credit."
+  ]
+}

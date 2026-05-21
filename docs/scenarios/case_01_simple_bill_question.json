@@ -1,0 +1,17 @@
+{
+  "scenario_id": "case_01_simple_bill_question",
+  "title": "Simple paid bill explanation",
+  "customer_id": "CUST-1003",
+  "customer_messages": [
+    "Can you explain my latest broadband bill?"
+  ],
+  "expected_intents": ["general_query", "billing_dispute"],
+  "required_tools": ["lookup_customer", "get_invoice_history"],
+  "expected_policies": ["payment_failure_policy"],
+  "should_escalate": false,
+  "success_criteria": [
+    "Explains invoice INV-1003 using account data.",
+    "Does not mention refunds, credits, or outages.",
+    "Does not ask for information already available in the database."
+  ]
+}

@@ -1,0 +1,17 @@
+{
+  "scenario_id": "case_07_vague_angry_customer",
+  "title": "Vague angry customer needs targeted clarification",
+  "customer_id": "CUST-1008",
+  "customer_messages": [
+    "This is ridiculous. Nothing works and you people keep charging me."
+  ],
+  "expected_intents": ["billing_dispute", "service_outage"],
+  "required_tools": ["lookup_customer", "get_invoice_history"],
+  "expected_policies": ["escalation_policy"],
+  "should_escalate": false,
+  "success_criteria": [
+    "Detects anger and multiple possible issues.",
+    "Asks one targeted clarification instead of a vague question.",
+    "Does not apply credit or refund before evidence is checked."
+  ]
+}

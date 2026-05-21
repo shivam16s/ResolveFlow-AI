@@ -1,0 +1,17 @@
+{
+  "scenario_id": "case_10_plan_downgrade_lockin",
+  "title": "Plan downgrade with pending cancellation",
+  "customer_id": "CUST-1017",
+  "customer_messages": [
+    "Downgrade me to the cheapest plan before my next bill."
+  ],
+  "expected_intents": ["plan_change", "cancellation_intent"],
+  "required_tools": ["lookup_customer", "retrieve_policy", "change_plan"],
+  "expected_policies": ["plan_change_policy", "cancellation_policy"],
+  "should_escalate": true,
+  "success_criteria": [
+    "Detects pending cancellation status.",
+    "Explains next-cycle downgrade behavior.",
+    "Escalates if fee waiver or cancellation conflict appears."
+  ]
+}

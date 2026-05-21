@@ -1,0 +1,17 @@
+{
+  "scenario_id": "case_06_technician_slot_after_router_issue",
+  "title": "Technician visit after router issue",
+  "customer_id": "CUST-1008",
+  "customer_messages": [
+    "My router lights are blinking red and my connection keeps dropping."
+  ],
+  "expected_intents": ["router_issue", "technician_request"],
+  "required_tools": ["lookup_customer", "run_router_diagnostic", "retrieve_policy", "create_ticket", "schedule_technician"],
+  "expected_policies": ["technician_visit_policy"],
+  "should_escalate": false,
+  "success_criteria": [
+    "Runs diagnostics before offering a technician.",
+    "Creates or links a service ticket.",
+    "Schedules only after the customer chooses a slot."
+  ]
+}

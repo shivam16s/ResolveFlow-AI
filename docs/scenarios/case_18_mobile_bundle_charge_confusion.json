@@ -1,0 +1,17 @@
+{
+  "scenario_id": "case_18_mobile_bundle_charge_confusion",
+  "title": "Mobile bundle charge confusion",
+  "customer_id": "CUST-1011",
+  "customer_messages": [
+    "Why am I paying for mobile add-ons? I thought this was only broadband."
+  ],
+  "expected_intents": ["billing_dispute", "general_query"],
+  "required_tools": ["lookup_customer", "get_invoice_history"],
+  "expected_policies": ["payment_failure_policy", "plan_change_policy"],
+  "should_escalate": false,
+  "success_criteria": [
+    "Identifies Mobile Broadband Bundle plan.",
+    "Explains included mobile add-ons without treating it as duplicate billing.",
+    "Offers plan-change path if the customer wants broadband only."
+  ]
+}

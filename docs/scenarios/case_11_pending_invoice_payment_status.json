@@ -1,0 +1,17 @@
+{
+  "scenario_id": "case_11_pending_invoice_payment_status",
+  "title": "Pending invoice payment status",
+  "customer_id": "CUST-1014",
+  "customer_messages": [
+    "Why is my account suspended? I paid my bill already."
+  ],
+  "expected_intents": ["billing_dispute", "general_query"],
+  "required_tools": ["lookup_customer", "get_invoice_history", "retrieve_policy"],
+  "expected_policies": ["payment_failure_policy"],
+  "should_escalate": false,
+  "success_criteria": [
+    "Detects suspended account status.",
+    "Checks pending invoice INV-1014.",
+    "Does not claim payment success without a confirmed paid invoice."
+  ]
+}

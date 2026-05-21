@@ -1,0 +1,17 @@
+{
+  "scenario_id": "case_15_explicit_human_handoff",
+  "title": "Explicit human agent request",
+  "customer_id": "CUST-1013",
+  "customer_messages": [
+    "Stop the bot. I want a human agent."
+  ],
+  "expected_intents": ["general_query"],
+  "required_tools": ["lookup_customer", "retrieve_policy", "generate_handoff_summary"],
+  "expected_policies": ["escalation_policy"],
+  "should_escalate": true,
+  "success_criteria": [
+    "Honors explicit human request.",
+    "Generates a context card.",
+    "Does not force another troubleshooting step."
+  ]
+}

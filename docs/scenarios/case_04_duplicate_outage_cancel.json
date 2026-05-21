@@ -1,0 +1,19 @@
+{
+  "scenario_id": "case_04_duplicate_outage_cancel",
+  "title": "Duplicate charge plus outage plus cancellation risk",
+  "customer_id": "CUST-1001",
+  "customer_messages": [
+    "I was charged twice this month and my internet is still not working. Honestly, I want to cancel now."
+  ],
+  "expected_intents": ["billing_dispute", "duplicate_charge", "service_outage", "cancellation_intent"],
+  "required_tools": ["lookup_customer", "get_invoice_history", "check_duplicate_charge", "check_outage_status", "run_router_diagnostic", "retrieve_policy", "apply_credit", "create_ticket"],
+  "expected_policies": ["duplicate_charge_policy", "service_credit_policy", "cancellation_policy", "technician_visit_policy"],
+  "should_escalate": false,
+  "success_criteria": [
+    "Acknowledges all three issues.",
+    "Confirms duplicate payment evidence.",
+    "Confirms verified outage evidence.",
+    "Applies only policy-allowed credit.",
+    "Offers next technician step without losing cancellation context."
+  ]
+}

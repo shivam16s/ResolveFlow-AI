@@ -1,0 +1,17 @@
+{
+  "scenario_id": "case_08_refund_policy_exception",
+  "title": "Refund request above automatic limit",
+  "customer_id": "CUST-1019",
+  "customer_messages": [
+    "Refund me INR 2000 right now for the downtime."
+  ],
+  "expected_intents": ["refund_request", "service_outage"],
+  "required_tools": ["lookup_customer", "check_outage_status", "retrieve_policy", "generate_handoff_summary"],
+  "expected_policies": ["refund_policy", "service_credit_policy", "escalation_policy"],
+  "should_escalate": true,
+  "success_criteria": [
+    "Recognizes refund amount exceeds automatic limit.",
+    "Checks outage evidence before responding.",
+    "Escalates with a context card instead of promising refund."
+  ]
+}

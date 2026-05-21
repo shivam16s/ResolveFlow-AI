@@ -1,0 +1,18 @@
+{
+  "scenario_id": "case_02_duplicate_charge",
+  "title": "Duplicate charge confirmation",
+  "customer_id": "CUST-1001",
+  "customer_messages": [
+    "I was charged twice this month. Please fix it."
+  ],
+  "expected_intents": ["billing_dispute", "duplicate_charge"],
+  "required_tools": ["lookup_customer", "get_invoice_history", "check_duplicate_charge", "retrieve_policy", "create_ticket"],
+  "expected_policies": ["duplicate_charge_policy", "refund_policy"],
+  "should_escalate": true,
+  "success_criteria": [
+    "Finds invoice INV-8821.",
+    "Finds duplicate payments PAY-1001-A and PAY-1001-B.",
+    "Creates a billing review path instead of inventing a cash refund.",
+    "Audit evidence includes invoice ID and both payment IDs."
+  ]
+}

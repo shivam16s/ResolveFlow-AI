@@ -1,0 +1,17 @@
+{
+  "scenario_id": "case_12_unverified_outage_no_credit",
+  "title": "Unverified outage credit denial",
+  "customer_id": "CUST-1004",
+  "customer_messages": [
+    "The internet went out yesterday. Apply a credit to my account."
+  ],
+  "expected_intents": ["service_outage", "refund_request"],
+  "required_tools": ["lookup_customer", "check_outage_status", "retrieve_policy", "create_ticket"],
+  "expected_policies": ["service_credit_policy"],
+  "should_escalate": false,
+  "success_criteria": [
+    "Finds unverified outage OUT-KOC-C03-20260509.",
+    "Does not apply automatic credit.",
+    "Creates a service ticket or asks for troubleshooting evidence."
+  ]
+}

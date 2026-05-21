@@ -1,0 +1,17 @@
+{
+  "scenario_id": "case_09_plan_upgrade",
+  "title": "Plan upgrade request",
+  "customer_id": "CUST-1010",
+  "customer_messages": [
+    "I want faster internet. Can you upgrade my plan?"
+  ],
+  "expected_intents": ["plan_change"],
+  "required_tools": ["lookup_customer", "retrieve_policy", "change_plan"],
+  "expected_policies": ["plan_change_policy"],
+  "should_escalate": false,
+  "success_criteria": [
+    "Shows current plan before recommending a new one.",
+    "Confirms price and speed before changing plan.",
+    "Does not backdate the plan change."
+  ]
+}

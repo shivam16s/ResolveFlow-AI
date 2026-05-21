@@ -1,0 +1,19 @@
+{
+  "scenario_id": "case_19_repeated_question_loop",
+  "title": "Repeated question loop escalation",
+  "customer_id": "CUST-1009",
+  "customer_messages": [
+    "My internet is not working.",
+    "I already said my internet is not working.",
+    "Why are you asking again? It is not working."
+  ],
+  "expected_intents": ["service_outage"],
+  "required_tools": ["lookup_customer", "check_outage_status", "run_router_diagnostic", "retrieve_policy", "generate_handoff_summary"],
+  "expected_policies": ["escalation_policy", "technician_visit_policy"],
+  "should_escalate": true,
+  "success_criteria": [
+    "Detects repeated-question loop.",
+    "Avoids asking the same generic clarification again.",
+    "Escalates or offers a concrete diagnostic next step."
+  ]
+}

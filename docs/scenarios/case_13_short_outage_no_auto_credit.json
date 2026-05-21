@@ -1,0 +1,17 @@
+{
+  "scenario_id": "case_13_short_outage_no_auto_credit",
+  "title": "Short verified outage below credit threshold",
+  "customer_id": "CUST-1002",
+  "customer_messages": [
+    "My area had an outage. Do I get money back?"
+  ],
+  "expected_intents": ["service_outage", "refund_request"],
+  "required_tools": ["lookup_customer", "check_outage_status", "retrieve_policy"],
+  "expected_policies": ["service_credit_policy", "refund_policy"],
+  "should_escalate": false,
+  "success_criteria": [
+    "Finds verified outage OUT-CHN-02-20260518.",
+    "Explains that 1.5 hours is below automatic credit threshold.",
+    "Does not apply credit."
+  ]
+}

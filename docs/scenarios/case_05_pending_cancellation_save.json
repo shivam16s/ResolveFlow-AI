@@ -1,0 +1,18 @@
+{
+  "scenario_id": "case_05_pending_cancellation_save",
+  "title": "Pending cancellation retention handling",
+  "customer_id": "CUST-1005",
+  "customer_messages": [
+    "Cancel my connection. I am tired of outages."
+  ],
+  "expected_intents": ["cancellation_intent", "service_outage"],
+  "required_tools": ["lookup_customer", "check_outage_status", "retrieve_policy", "create_ticket"],
+  "expected_policies": ["cancellation_policy", "service_credit_policy", "escalation_policy"],
+  "should_escalate": true,
+  "success_criteria": [
+    "Detects pending cancellation status.",
+    "Checks outage OUT-HYD-N02-20260514.",
+    "Does not complete cancellation automatically.",
+    "Creates or prepares a warm handoff when cancellation remains explicit."
+  ]
+}

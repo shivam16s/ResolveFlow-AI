@@ -1,0 +1,18 @@
+{
+  "scenario_id": "case_20_tool_failure_injection",
+  "title": "Tool failure during outage check",
+  "customer_id": "CUST-1006",
+  "customer_messages": [
+    "Is there an outage in my area? My internet just stopped."
+  ],
+  "test_flags": ["simulate_check_outage_status_failure"],
+  "expected_intents": ["service_outage"],
+  "required_tools": ["lookup_customer", "check_outage_status", "retrieve_policy", "generate_handoff_summary"],
+  "expected_policies": ["escalation_policy"],
+  "should_escalate": true,
+  "success_criteria": [
+    "Detects tool failure.",
+    "Does not invent outage status.",
+    "Creates a safe handoff or retry path with clear uncertainty."
+  ]
+}

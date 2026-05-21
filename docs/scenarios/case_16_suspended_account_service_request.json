@@ -1,0 +1,17 @@
+{
+  "scenario_id": "case_16_suspended_account_service_request",
+  "title": "Suspended account asks for technician",
+  "customer_id": "CUST-1014",
+  "customer_messages": [
+    "Send a technician today. My connection is dead."
+  ],
+  "expected_intents": ["service_outage", "technician_request"],
+  "required_tools": ["lookup_customer", "run_router_diagnostic", "retrieve_policy", "generate_handoff_summary"],
+  "expected_policies": ["technician_visit_policy", "payment_failure_policy", "escalation_policy"],
+  "should_escalate": true,
+  "success_criteria": [
+    "Detects suspended account before scheduling.",
+    "Does not schedule a technician automatically.",
+    "Explains the account-status blocker and escalates if needed."
+  ]
+}

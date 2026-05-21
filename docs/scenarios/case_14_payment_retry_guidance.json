@@ -1,0 +1,17 @@
+{
+  "scenario_id": "case_14_payment_retry_guidance",
+  "title": "Payment retry guidance",
+  "customer_id": "CUST-1016",
+  "customer_messages": [
+    "My payment failed twice. Should I try again?"
+  ],
+  "expected_intents": ["billing_dispute", "general_query"],
+  "required_tools": ["lookup_customer", "get_invoice_history", "retrieve_policy"],
+  "expected_policies": ["payment_failure_policy", "escalation_policy"],
+  "should_escalate": true,
+  "success_criteria": [
+    "Checks invoice and payment records before guidance.",
+    "Does not say payment failed unless records support it.",
+    "Escalates because the customer reports more than one failed retry."
+  ]
+}

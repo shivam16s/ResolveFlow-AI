@@ -1,0 +1,17 @@
+{
+  "scenario_id": "case_03_verified_outage_credit",
+  "title": "Verified outage service credit",
+  "customer_id": "CUST-1001",
+  "customer_messages": [
+    "My internet was down yesterday for hours. Am I eligible for a credit?"
+  ],
+  "expected_intents": ["service_outage", "refund_request"],
+  "required_tools": ["lookup_customer", "check_outage_status", "retrieve_policy", "apply_credit"],
+  "expected_policies": ["service_credit_policy"],
+  "should_escalate": false,
+  "success_criteria": [
+    "Uses OUT-CHN-04-20260520 as verified outage evidence.",
+    "Applies INR 300 account credit for a 7 hour verified outage.",
+    "Does not apply more than policy allows."
+  ]
+}
