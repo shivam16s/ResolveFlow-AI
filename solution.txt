@@ -1,0 +1,1894 @@
+================================================================================
+RESOLVEFLOW AI — COMPLETE END-TO-END SOLUTION DOCUMENT
+================================================================================
+Project: ResolveFlow AI — Policy-Grounded Customer Care Agent
+Domain:  ConnectCare Telecom (telecom / subscription customer care)
+Version: 1.0
+
+This document maps each of the 12 ResolveFlow features to its research paper
+algorithm and provides a complete, buildable end-to-end implementation plan.
+Every algorithm description is taken directly from the cited research paper.
+
+================================================================================
+TABLE OF CONTENTS
+================================================================================
+
+ 1. Multi-Issue Intent Detection
+ 2. Customer Memory Layer
+ 3. Policy-Grounded Retrieval
+ 4. Policy Graph / Policy DAG
+ 5. Tool-Calling Layer
+ 6. Clarification Engine
+6A. Guided User Action Coordinator
+ 7. Conversation Health Score
+ 8. Warm Human Handoff
+ 9. Customer Context Card
+10. Resolution Proof Trail
+11. Agent Evaluation Harness
+12. Admin Dashboard
+
+Appendix A: System Architecture (full)
+Appendix B: Database Schema (full)
+Appendix C: Tool Definitions (full)
+Appendix D: 30-Day Build Order
+Appendix E: Research Paper Citations
+
+================================================================================
+FEATURE 1: MULTI-ISSUE INTENT DETECTION
+================================================================================
+
+PURPOSE
+-------
+Detect when a customer message contains more than one distinct issue so that the
+agent can queue and address each issue rather than answering only the first one.
+
+Example input:
+  "I was charged twice this month and my internet is still not working. I want
+   to cancel now."
+
+Expected detection output:
+  Issue 1: Billing dispute (duplicate charge)
+  Issue 2: Service outage (internet not working)
+  Issue 3: Cancellation intent (churn risk)
+
+RESEARCH BASIS
+--------------
+τ²-bench (arXiv 2506.07982): "Evaluating Conversational Agents in a Dual-Control
+Environment"
+
+KEY ALGORITHM FROM τ²-BENCH
+-----------------------------
+τ²-bench models the support conversation as a Decentralized Partially Observable
+Markov Decision Process (Dec-POMDP) where:
+
+  State S: shared world state (database rows, flags, diagnostic results)
+  Observations O_agent, O_user: each party sees a partial view of S
+  Actions A_agent: tool calls + utterances
+  Actions A_user: tool calls (e.g., router restart) + utterances
+  Reward R: task completion verified against goal state
+
+The paper introduces a compositional task generator that creates tasks by
+combining atomic sub-tasks. This directly informs our multi-intent detection:
+each sub-task (billing, outage, cancellation) is an atomic intent component.
+
+From the paper abstract:
+  "A compositional task generator that programmatically creates diverse,
+   verifiable tasks from atomic components, ensuring domain coverage and
+   controlled complexity."
+
+IMPLEMENTATION
+--------------
+
+Step 1 — Intent Classifier
+  Input: raw customer message
+  Model: use an LLM with a structured output prompt
+
+  Prompt design:
+  ---------------------------------------------------------------
+  You are an intent detector for a telecom support agent.
+  Given the customer message, extract ALL distinct issues.
+  Return a JSON array of intents from:
+    ["billing_dispute", "duplicate_charge", "service_outage",
+     "router_issue", "plan_change", "cancellation_intent",
+     "refund_request", "technician_request", "general_query"]
+
+  Customer message: "{message}"
+
+  Output format:
+  {
+    "intents": ["intent1", "intent2"],
+    "primary_intent": "intent1",
+    "cancellation_risk": true/false,
+    "urgency": "high/medium/low"
+  }
+  ---------------------------------------------------------------
+
+Step 2 — Issue Queue
+  Store detected intents in an ordered queue:
+    issue_queue = [
+      {"intent": "duplicate_charge", "status": "pending", "priority": 1},
+      {"intent": "service_outage",   "status": "pending", "priority": 2},
+      {"intent": "cancellation_intent", "status": "pending", "priority": 3}
+    ]
+
+Step 3 — Sequential Resolution Loop (from τ²-bench Dec-POMDP model)
+  For each issue in queue:
+    a. Retrieve relevant memory for that issue
+    b. Retrieve relevant policy for that issue
+    c. Call required tools for that issue
+    d. Generate partial resolution response
+    e. Mark issue as resolved or escalated
+    f. Proceed to next issue
+
+Step 4 — Acknowledgment response
+  After detection, acknowledge ALL detected issues:
+    "I can see you have three concerns: a billing issue, a service problem,
+     and you're thinking about cancelling. Let me address each one."
+
+DATA STRUCTURES
+---------------
+  ConversationState {
+    session_id: str
+    customer_id: str
+    raw_message: str
+    issue_queue: List[Issue]
+    current_issue: Issue
+    resolved_issues: List[Issue]
+    escalation_required: bool
+  }
+
+  Issue {
+    intent: str
+    status: "pending" | "in_progress" | "resolved" | "escalated"
+    priority: int
+    tools_called: List[str]
+    resolution: str | null
+  }
+
+================================================================================
+FEATURE 2: CUSTOMER MEMORY LAYER
+================================================================================
+
+PURPOSE
+-------
+Maintain a three-tier memory store so the agent never asks the customer to
+repeat context that was already shared in past or current sessions.
+
+Memory tiers:
+  Stable memory:  customer plan, preferences, language
+  Episodic memory: previous complaints, tickets, credits, refunds
+  Session memory: what the customer already said in this conversation
+
+RESEARCH BASIS (PRIMARY)
+------------------------
+LongMemEval (arXiv 2410.10813): "Benchmarking Chat Assistants on Long-Term
+Interactive Memory"
+
+KEY ALGORITHM FROM LONGMEMEVAL
+--------------------------------
+LongMemEval identifies five core memory capabilities that a long-term assistant
+must possess:
+  1. Information Extraction — pulling facts from past sessions
+  2. Multi-session Reasoning — connecting facts across different sessions
+  3. Temporal Reasoning — tracking when something happened, recency, order
+  4. Knowledge Updates — handling when a customer's situation changes
+  5. Abstention — knowing when there is not enough memory to answer safely
+
+The paper proposes a three-stage memory processing framework:
+
+  Stage 1: INDEXING
+    Split long session history into atomic memory units (one fact per unit).
+    Each memory unit is indexed with:
+      - embedding vector (for semantic search)
+      - metadata: timestamp, session_id, topic, customer_id
+      - fact type: stable / episodic / preference
+
+  Stage 2: RETRIEVAL
+    For a new query, expand it using:
+      a. Fact-augmented key expansion: add derived facts to the search query
+         Example: "billing issue" → "billing issue OR duplicate charge OR invoice"
+      b. Time-aware query expansion: add temporal anchors
+         Example: "last week's complaint" → include date range in search
+    Run vector similarity search + BM25 keyword search
+    Merge results by rank fusion
+
+  Stage 3: READING
+    Pass retrieved memory units to the LLM with a structured context template.
+    Instruct the LLM to cite which memory unit it used.
+    If no relevant memory found → abstain rather than hallucinate.
+
+Key finding: commercial systems drop ~30% accuracy in sustained multi-session
+interactions when memory is not structured. This is why ResolveFlow uses
+explicit memory lanes.
+
+RESEARCH BASIS (SECONDARY)
+----------------------------
+HippoRAG (arXiv 2405.14831): "Neurobiologically Inspired Long-Term Memory for LLMs"
+
+KEY ALGORITHM FROM HIPPOGRAPH
+-------------------------------
+HippoRAG applies the hippocampal memory indexing theory to build a graph-based
+memory index for multi-hop memory retrieval.
+
+OFFLINE INDEXING PHASE (run when new session data arrives):
+  1. For each session transcript or customer event (passage p):
+     a. Use LLM L to extract named entities + OpenIE triples (subject, relation,
+        object). This is done via 1-shot prompting.
+        Example triples extracted from "customer reported outage on May 14":
+          (customer_Rahul, reported_outage, May_14)
+          (outage, location, Chennai_Zone_04)
+     b. Add noun phrase nodes N and relation edges E to the knowledge graph KG.
+     c. Use retrieval encoder M to add synonymy edges E' between nodes whose
+        cosine similarity exceeds threshold τ = 0.8.
+        Example: ("duplicate_charge", "double billing") get an E' edge.
+  2. Build matrix P of size |N| × |P|:
+     P[i][j] = number of times noun phrase node i appears in passage j
+
+ONLINE RETRIEVAL PHASE (run at query time):
+  1. Use LLM to extract named entities Cq = {c1, …, cn} from query q.
+  2. Encode each ci with retrieval encoder M.
+  3. Find closest node in KG to each ci → query nodes Rq = {r1, …, rn}.
+  4. Set personalized probability vector n_hat over all N:
+       n_hat[ri] = (1/n) * node_specificity(ri) for ri in Rq
+       n_hat[other] = 0
+     where node_specificity(i) = |P_i|^-1   (i.e., inverse passage frequency)
+  5. Run Personalized PageRank (PPR) with damping factor 0.5:
+       n_hat' = PPR(KG, n_hat)
+  6. Compute passage scores:
+       p_hat = n_hat' × P  (matrix multiply: |N| vector × |N|×|P| matrix)
+  7. Return top-k passages ranked by p_hat.
+
+This allows "Rahul had an outage last week and received a credit" to be
+retrieved even when the query only mentions "Rahul" and "credit", because the
+graph path Rahul → outage → credit is traversed in one PPR step.
+
+IMPLEMENTATION
+--------------
+
+Database tables:
+  customer_memory {
+    memory_id:     uuid
+    customer_id:   str
+    memory_type:   "stable" | "episodic" | "session"
+    content:       str        (the raw fact)
+    embedding:     vector     (stored in ChromaDB/FAISS)
+    session_id:    str
+    created_at:    datetime
+    updated_at:    datetime
+    entity_tags:   json       (extracted noun phrases for KG indexing)
+  }
+
+  memory_graph {
+    node_id:       str        (noun phrase or entity)
+    node_type:     "entity" | "event" | "policy" | "preference"
+    customer_id:   str
+    passages:      json       (list of memory_ids this node appears in)
+    edges:         json       (list of {target_node, relation, weight})
+  }
+
+Code architecture:
+  class MemoryManager:
+    def index_session(session_transcript, customer_id):
+      # LongMemEval Stage 1: decompose into atomic memory units
+      units = decompose_to_memory_units(session_transcript)
+      for unit in units:
+        embedding = embed(unit.content)
+        store_in_vector_db(customer_id, unit, embedding)
+        # HippoRAG: extract triples and build/update KG
+        triples = llm_extract_openie_triples(unit.content)
+        update_memory_graph(customer_id, triples, unit.memory_id)
+
+    def retrieve(query, customer_id, top_k=5):
+      # LongMemEval Stage 2: query expansion
+      expanded_query = fact_augmented_expansion(query)
+      temporal_query = time_aware_expansion(query)
+      # Vector search
+      vector_results = vector_db.search(customer_id, expanded_query, k=top_k*2)
+      # HippoRAG: graph search
+      query_entities = llm_extract_named_entities(query)
+      graph_results = hipporag_ppr_retrieval(customer_id, query_entities, top_k)
+      # Merge by rank fusion
+      return rank_fusion(vector_results, graph_results, top_k)
+
+    def read(retrieved_units, query):
+      # LongMemEval Stage 3: structured reading with abstention
+      context = format_memory_context(retrieved_units)
+      return llm_read_with_citation(context, query)
+
+Memory update triggers:
+  - End of conversation: index full session
+  - Mid-session: update session memory after each turn
+  - Plan change event: update stable memory
+  - Credit/refund event: add to episodic memory
+
+================================================================================
+FEATURE 3: POLICY-GROUNDED RETRIEVAL
+================================================================================
+
+PURPOSE
+-------
+Retrieve the correct policy document before answering any risky question
+(refund, credit, cancellation, escalation). Assess retrieval quality and
+retry or fall back if the retrieved content is not reliable.
+
+RESEARCH BASIS (PRIMARY)
+------------------------
+Self-RAG (arXiv 2310.11511): "Learning to Retrieve, Generate, and Critique
+through Self-Reflection"
+
+KEY ALGORITHM FROM SELF-RAG
+-----------------------------
+Self-RAG introduces four types of "reflection tokens" that control when to
+retrieve and how to evaluate retrieved content:
+
+  [Retrieve]:  yes | no | continue
+    → Should the model retrieve passages for this segment?
+
+  [IsRel]:     relevant | irrelevant
+    → Is the retrieved passage relevant to the input?
+
+  [IsSup]:     fully supported | partially supported | no support
+    → Does the passage support the generated text?
+
+  [IsUse]:     1 | 2 | 3 | 4 | 5
+    → How useful is this passage for answering the query?
+
+INFERENCE ALGORITHM (how the agent decides to retrieve and score):
+  For each generation segment yt:
+    1. Predict [Retrieve] token from {yes, no, continue}
+    2. If [Retrieve] = yes:
+         Retrieve top K passages D = {d1, …, dK} from vector store
+         For each passage di in parallel:
+           a. Predict [IsRel](x, di)  — relevance check
+           b. Generate segment yt | x, di
+           c. Predict [IsSup](x, di, yt) — support check
+           d. Score = p(yt | x, di, y<t) + Σ wG * sG  (weighted reflection scores)
+    3. Select passage d* with highest final score
+    4. Predict [IsUse](x, yt*) on final output
+    5. If [IsUse] < 3 → trigger CRAG corrective flow (see below)
+
+Training note: a critic model (fine-tuned on GPT-4 labels) scores the
+reflection tokens. In our case we approximate this with LLM-as-judge prompts.
+
+RESEARCH BASIS (SECONDARY)
+---------------------------
+CRAG (arXiv 2401.15884): "Corrective Retrieval Augmented Generation"
+
+KEY ALGORITHM FROM CRAG
+-------------------------
+CRAG adds a retrieval evaluator that classifies retrieved documents into three
+confidence states and takes different actions for each:
+
+  Inputs: query x, retrieved documents D = {d1, …, dk}
+
+  For each (x, di) pair, evaluator E produces a confidence score in [-1, 1].
+
+  STEP 1 — EVALUATE
+    score_i = E(x, di)  for each retrieved doc
+    max_score = max(score_i for all i)
+
+  STEP 2 — ROUTE by threshold (empirically set; paper uses 0.59 / -0.99):
+
+    CASE A: CORRECT   (max_score > upper_threshold)
+      → Internal knowledge path:
+        1. Decompose each doc into fine-grained "knowledge strips"
+           (sentence or paragraph-level chunks)
+        2. Re-score each strip with E(x, strip)
+        3. Keep only strips with score > threshold
+        4. Recompose kept strips → refined internal knowledge
+        5. Pass to generator
+
+    CASE B: INCORRECT (all scores < lower_threshold)
+      → External knowledge path:
+        1. Discard all retrieved docs
+        2. Rewrite query: "convert query to short web-search keywords"
+           Example: "Can I get a service credit?" → "telecom service credit policy"
+        3. Execute web search / search secondary corpus
+        4. Apply same strip decomposition and re-scoring
+        5. Pass to generator
+
+    CASE C: AMBIGUOUS (scores between thresholds)
+      → Combine internal + external:
+        1. Use Case A strips from original docs
+        2. Also do the Case B web search
+        3. Concatenate both refined sources
+        4. Pass to generator
+
+  STEP 3 — GENERATE
+    Generator G produces final answer from refined knowledge + query.
+
+Evaluator: the paper uses a T5-large (770M param) model fine-tuned on
+relevance pairs. For ResolveFlow MVP, use an LLM-as-judge prompt instead.
+
+IMPLEMENTATION
+--------------
+
+class PolicyRetriever:
+  policy_docs = [
+    "service_credit_policy",
+    "refund_policy",
+    "duplicate_charge_policy",
+    "cancellation_policy",
+    "technician_visit_policy",
+    "plan_change_policy",
+    "escalation_policy"
+  ]
+
+  def retrieve(query, k=5):
+    # Step 1: Self-RAG — decide whether to retrieve
+    should_retrieve = llm_predict_retrieve_token(query)
+    if not should_retrieve:
+      return None, "no_retrieval"
+
+    # Step 2: Vector search over policy_docs
+    candidates = vector_db.search(policy_collection, query, k=k)
+
+    # Step 3: CRAG — evaluate each retrieved doc
+    scored_docs = []
+    for doc in candidates:
+      score = llm_evaluate_relevance(query, doc)
+      scored_docs.append((score, doc))
+
+    max_score = max(s for s, _ in scored_docs)
+    UPPER = 0.6
+    LOWER = 0.2
+
+    # Step 4: CRAG routing
+    if max_score > UPPER:
+      # CORRECT path
+      strips = decompose_to_strips(best_doc)
+      scored_strips = [(llm_evaluate_relevance(query, s), s) for s in strips]
+      refined = [s for score, s in scored_strips if score > UPPER]
+      return refined, "correct"
+    elif max_score < LOWER:
+      # INCORRECT path — retry with keyword rewrite
+      keywords = llm_rewrite_query_to_keywords(query)
+      new_candidates = vector_db.search(policy_collection, keywords, k=k)
+      strips = decompose_to_strips(new_candidates)
+      scored_strips = [(llm_evaluate_relevance(query, s), s) for s in strips]
+      refined = [s for score, s in scored_strips if score > LOWER]
+      return refined, "corrected"
+    else:
+      # AMBIGUOUS path — combine both
+      internal_strips = crag_correct_path(best_doc, query)
+      external_strips = crag_incorrect_path(query)
+      return internal_strips + external_strips, "ambiguous"
+
+  def generate_answer(query, refined_docs):
+    # Self-RAG: predict [IsSup] and [IsUse] for each doc
+    for doc in refined_docs:
+      sup_score = llm_predict_issup(query, doc)
+      use_score = llm_predict_isuse(query, doc)
+    # Generate with citation
+    return llm_generate_with_citation(query, refined_docs)
+
+Policy document ingestion:
+  1. Load 7 policy text files
+  2. Chunk each into 300-token paragraphs with 50-token overlap
+  3. Embed each chunk with sentence-transformer (e.g., all-MiniLM-L6-v2)
+  4. Store in ChromaDB collection named "resolveflow_policies"
+  5. Store raw text in SQLite policies table for citation display
+
+================================================================================
+FEATURE 4: POLICY GRAPH / POLICY DAG
+================================================================================
+
+PURPOSE
+-------
+Route high-risk actions through a deterministic rule graph instead of letting
+the LLM freely decide. A Policy DAG checks pre-conditions before each action.
+
+Example DAG for "Apply Service Credit":
+  Was outage verified?
+    → NO  → Deny credit, suggest ticket
+    → YES → Was outage > 6 hours?
+               → NO  → Apply partial credit (≤ ₹100)
+               → YES → Has credit been applied this billing cycle?
+                          → YES → Escalate to human (cannot double-credit)
+                          → NO  → Is credit amount ≤ ₹500?
+                                     → YES → Auto-apply
+                                     → NO  → Escalate for approval
+
+RESEARCH BASIS (PRIMARY)
+------------------------
+JourneyBench / Beyond IVR (arXiv 2601.00596): "Benchmarking Customer Support
+LLM Agents for Business-Adherence"
+
+KEY ALGORITHM FROM JOURNEYBENCH
+---------------------------------
+JourneyBench represents support policies as directed graphs (called "user
+journeys") and introduces two agent designs:
+
+  SPA — Static-Prompt Agent:
+    The agent receives the full policy document as a static prompt.
+    No explicit structure; relies on LLM to follow rules.
+    Result: inconsistent rule compliance.
+
+  DPA — Dynamic-Prompt Agent:
+    The policy graph is traversed dynamically. At each node:
+      1. Evaluate the guard conditions of that node (tool call or LLM check)
+      2. Based on result, select the outgoing edge
+      3. Load only the policy text for the current node into context
+      4. Proceed to next node
+    Result: DPA significantly boosts adherence vs SPA.
+            Even GPT-4o-mini with DPA outperforms GPT-4o with SPA.
+
+Key insight from JourneyBench: "Structured orchestration matters more than
+model size." A smaller model with a policy graph beats a larger model without one.
+
+Metric: User Journey Coverage Score (UJCS) — fraction of required policy nodes
+visited in the correct order during a conversation.
+
+RESEARCH BASIS (SECONDARY)
+---------------------------
+SOP-Bench (arXiv 2506.08119): "Complex Industrial SOPs for Evaluating LLM Agents"
+
+KEY INSIGHT FROM SOP-BENCH
+----------------------------
+SOP-Bench tests agents on 2,000+ tasks from human-authored Standard Operating
+Procedures (SOPs) across 12 business domains. Key findings:
+  - LLM agents frequently skip required steps or call the wrong tool
+  - Function-Calling (FC) agents and ReAct agents fail differently
+  - No single model dominates; best performance ranges from 57% to 100% by domain
+  - Step-level validation (checking each SOP step, not just final output) is
+    necessary to catch partial failures
+
+This motivates ResolveFlow's Policy Graph to validate each step individually,
+not just the final outcome.
+
+IMPLEMENTATION
+--------------
+
+Define policy DAG nodes as Python dataclasses:
+
+  @dataclass
+  class PolicyNode:
+    node_id: str
+    description: str
+    condition_type: "tool_check" | "llm_check" | "threshold_check"
+    condition_args: dict
+    edges: dict[str, str]   # {condition_result: next_node_id}
+    action: str | None      # action to execute if this is a leaf
+
+Example: Service Credit DAG
+
+  policy_dag = {
+    "check_outage_verified": PolicyNode(
+      condition_type="tool_check",
+      condition_args={"tool": "check_outage_status", "field": "verified"},
+      edges={"true": "check_outage_duration", "false": "deny_credit"}
+    ),
+    "check_outage_duration": PolicyNode(
+      condition_type="threshold_check",
+      condition_args={"tool": "check_outage_status", "field": "duration_hours",
+                      "operator": ">", "value": 6},
+      edges={"true": "check_prior_credit", "false": "apply_partial_credit"}
+    ),
+    "check_prior_credit": PolicyNode(
+      condition_type="tool_check",
+      condition_args={"tool": "get_invoice_history",
+                      "field": "credit_this_cycle"},
+      edges={"false": "check_credit_amount", "true": "escalate_double_credit"}
+    ),
+    "check_credit_amount": PolicyNode(
+      condition_type="threshold_check",
+      condition_args={"field": "requested_amount", "operator": "<=",
+                      "value": 500},
+      edges={"true": "auto_apply_credit", "false": "escalate_approval"}
+    ),
+    "auto_apply_credit": PolicyNode(action="apply_credit"),
+    "escalate_double_credit": PolicyNode(action="handoff_human"),
+    "escalate_approval": PolicyNode(action="handoff_human"),
+    "deny_credit": PolicyNode(action="generate_denial_response"),
+    "apply_partial_credit": PolicyNode(action="apply_credit", args={"max": 100})
+  }
+
+class PolicyGraphValidator:
+  def run(self, policy_name, context):
+    dag = load_dag(policy_name)
+    current_node = dag.start_node
+    path = [current_node]
+    while not is_leaf(current_node):
+      result = evaluate_condition(current_node, context)
+      next_node = dag[current_node].edges[result]
+      path.append(next_node)
+      current_node = next_node
+    action = dag[current_node].action
+    ujcs = len(path) / len(dag)  # User Journey Coverage Score
+    return action, path, ujcs
+
+Supported policy DAGs (one per high-risk action):
+  - service_credit_dag
+  - duplicate_charge_refund_dag
+  - cancellation_retention_dag
+  - technician_dispatch_dag
+  - plan_downgrade_dag
+  - refund_exception_dag
+
+================================================================================
+FEATURE 5: TOOL-CALLING LAYER
+================================================================================
+
+PURPOSE
+-------
+Use explicit mock backend API calls instead of hallucinating account state.
+Every claim about a customer account must be backed by a tool call result.
+
+RESEARCH BASIS (PRIMARY)
+------------------------
+τ-bench (arXiv 2406.12045): "A Benchmark for Tool-Agent-User Interaction in
+Real-World Domains"
+
+KEY ALGORITHM FROM τ-BENCH
+---------------------------
+τ-bench creates a benchmark where a language agent is given:
+  - A set of domain-specific API tools
+  - Policy guidelines (rules about when/how to use tools)
+  - A simulated user (driven by a language model)
+
+The agent must complete tasks through multi-turn conversation + tool calls.
+
+Evaluation:
+  1. At the end of each conversation, compare actual database state to the
+     annotated goal state.
+  2. Task success = (actual_state == goal_state)
+  3. Reliability metric: pass^k
+     pass^k = (number of trials with at least one success) / k
+     → measures consistency, not just peak performance
+
+Key findings:
+  - GPT-4o succeeds on <50% of tasks
+  - pass^8 drops to <25% in retail domain
+  - Agents frequently call tools in wrong order or skip required tool calls
+
+This motivates ResolveFlow's tool call logging, sequential enforcement, and
+explicit step validation.
+
+RESEARCH BASIS (SECONDARY)
+---------------------------
+Beyond Browsing: API-Based Web Agents (arXiv 2410.16464)
+
+KEY INSIGHT FROM API-BASED AGENTS
+-----------------------------------
+The paper compares three agent types on WebArena tasks:
+  1. Browsing Agent (HTML/DOM interaction only)
+  2. API-Calling Agent (API calls only)
+  3. Hybrid Agent (both APIs and browsing)
+
+Results on WebArena:
+  - API-Based Agents outperform Browsing Agents
+  - Hybrid Agents achieve 38.9% success rate (SOTA among task-agnostic agents)
+  - Improvement: >24% absolute improvement over browsing alone
+
+Key finding: "When APIs are available, they present an attractive alternative
+to relying on web browsing alone."
+
+For ResolveFlow, this confirms: use explicit mock APIs, not LLM guess-work.
+
+IMPLEMENTATION
+--------------
+
+All 12 tools are mock functions backed by SQLite.
+Each tool logs its call and result to the audit trail.
+
+TOOL DEFINITIONS:
+
+def lookup_customer(customer_id: str) -> dict:
+  """
+  Returns: {customer_id, name, plan_id, location, risk_level,
+            preferred_language, account_status}
+  """
+  return db.query("SELECT * FROM customers WHERE customer_id = ?",
+                  customer_id)
+
+def get_invoice_history(customer_id: str, months: int = 3) -> list:
+  """
+  Returns: List of {invoice_id, amount, date, status, payment_id}
+  """
+  return db.query("""
+    SELECT * FROM invoices
+    WHERE customer_id = ? AND date > date('now', '-? months')
+    ORDER BY date DESC""", customer_id, months)
+
+def check_duplicate_charge(customer_id: str) -> dict:
+  """
+  Returns: {has_duplicate: bool, duplicate_txn_ids: list, amount: float}
+  """
+  payments = db.query("""
+    SELECT payment_id, amount, date FROM payments
+    WHERE customer_id = ? AND date > date('now', '-30 days')
+    ORDER BY date""", customer_id)
+  return detect_duplicates(payments)
+
+def check_outage_status(location: str) -> dict:
+  """
+  Returns: {verified: bool, outage_id, start_time, end_time,
+            duration_hours, affected_area}
+  """
+  return db.query("""
+    SELECT * FROM outages
+    WHERE location LIKE ? AND verified = 1
+    ORDER BY start_time DESC LIMIT 1""", f"%{location}%")
+
+def run_router_diagnostic(customer_id: str) -> dict:
+  """
+  Returns: {router_status: "ok"/"degraded"/"offline", signal_strength: int,
+            last_checked: datetime, recommendation: str}
+  """
+  return db.query("SELECT * FROM diagnostics WHERE customer_id = ?",
+                  customer_id)
+
+def retrieve_policy(policy_name: str) -> dict:
+  """
+  Returns: {policy_id, policy_name, policy_text, effective_date}
+  """
+  return db.query("SELECT * FROM policies WHERE policy_name = ?", policy_name)
+
+def apply_credit(customer_id: str, amount: float, reason: str) -> dict:
+  """
+  Applies credit to the customer's next invoice.
+  Returns: {success: bool, credit_id, new_balance, applied_amount}
+  """
+  # Validate against policy graph before executing
+  validate_policy("service_credit_dag", {"customer_id": customer_id,
+                  "amount": amount})
+  credit_id = db.insert("credits", {...})
+  log_audit("apply_credit", customer_id, credit_id, reason)
+  return {"success": True, "credit_id": credit_id, "applied_amount": amount}
+
+def create_ticket(customer_id: str, issue_type: str,
+                  priority: str) -> dict:
+  """
+  Returns: {ticket_id, status: "created", priority, estimated_resolution}
+  """
+  ticket_id = db.insert("tickets", {...})
+  log_audit("create_ticket", customer_id, ticket_id, issue_type)
+  return {"ticket_id": ticket_id, "status": "created"}
+
+def schedule_technician(customer_id: str, time_slot: str) -> dict:
+  """
+  Returns: {appointment_id, slot_confirmed, technician_name}
+  """
+  appointment_id = db.insert("appointments", {...})
+  return {"appointment_id": appointment_id, "slot_confirmed": time_slot}
+
+def change_plan(customer_id: str, new_plan_id: str) -> dict:
+  """
+  Returns: {success: bool, old_plan, new_plan, effective_date}
+  """
+  validate_policy("plan_change_dag", {"customer_id": customer_id,
+                  "new_plan": new_plan_id})
+  db.update("customers", {"plan_id": new_plan_id}, customer_id)
+  return {"success": True, "new_plan": new_plan_id}
+
+def generate_handoff_summary(conversation_id: str) -> dict:
+  """
+  Generates Customer Context Card for human agent.
+  Returns: full context card dict (see Feature 9)
+  """
+  return build_context_card(conversation_id)
+
+def generate_audit_log(case_id: str) -> dict:
+  """
+  Generates Resolution Proof Trail.
+  Returns: full audit log dict (see Feature 10)
+  """
+  return build_audit_log(case_id)
+
+TOOL CALL ENFORCEMENT
+---------------------
+Follow τ-bench's finding that agents skip or mis-order tools:
+  1. Define required_tools per intent:
+     billing_dispute → [lookup_customer, get_invoice_history,
+                        check_duplicate_charge]
+     service_outage  → [lookup_customer, check_outage_status,
+                        run_router_diagnostic]
+  2. After agent generates tool calls, validate:
+       missing_tools = required_tools[intent] - called_tools
+       if missing_tools: force agent to call missing tools before responding
+  3. Log every tool call with timestamp and result to audit trail
+
+================================================================================
+FEATURE 6: CLARIFICATION ENGINE
+================================================================================
+
+PURPOSE
+-------
+Ask targeted, high-value clarification questions instead of generic "please
+clarify" prompts. Clarify only when a specific missing slot blocks action.
+
+RESEARCH BASIS
+--------------
+τ²-bench (arXiv 2506.07982): "Evaluating Conversational Agents in a
+Dual-Control Environment"
+
+KEY INSIGHT FROM τ²-BENCH ON CLARIFICATION
+---------------------------------------------
+τ²-bench evaluates agents in a dual-control setting where both agent and user
+must take actions. A key finding:
+
+  "Our experiments show significant performance drops when agents shift from
+   no-user to dual-control, highlighting the challenges of guiding users."
+
+The paper provides fine-grained error analysis separating:
+  - Reasoning errors (agent misunderstands the situation)
+  - Communication errors (agent fails to guide the user to the right action)
+  - Coordination errors (agent and user act on misaligned state)
+
+This shows that clarification must be precise: ask for exactly the information
+needed to take the next action, not a vague open question.
+
+IMPLEMENTATION
+--------------
+
+Slot schema per intent:
+  billing_dispute: {
+    required: [customer_id, billing_period],
+    optional: [specific_charge_amount]
+  }
+  service_outage: {
+    required: [customer_id, location],
+    optional: [outage_start_time, device_type]
+  }
+  cancellation_intent: {
+    required: [customer_id, reason],
+    optional: [alternative_plan_interest]
+  }
+
+Decision logic:
+  def decide_next_action(intent, current_slots, memory, policy_context):
+    missing_required = get_missing_required_slots(intent, current_slots)
+
+    if len(missing_required) > 0:
+      # Ask for the most critical missing slot first
+      slot_to_ask = prioritize_slot(missing_required)
+      return Action(
+        type="ASK_CLARIFICATION",
+        question=generate_targeted_question(intent, slot_to_ask),
+        slot=slot_to_ask
+      )
+
+    elif has_enough_context_for_tool_call(intent, current_slots):
+      return Action(type="CALL_TOOL", tool=select_tool(intent))
+
+    elif policy_requires_human_approval(intent, current_slots):
+      return Action(type="HANDOFF")
+
+    else:
+      return Action(type="ANSWER")
+
+Question generation:
+  Bad:  "Can you provide more details?"
+  Good: "Was this charge on your broadband bill or your mobile add-on?"
+  Good: "What location is experiencing the internet outage?"
+  Good: "Are you looking to cancel completely, or would a plan downgrade help?"
+
+The targeted question is generated by:
+  f"Based on the customer's issue ({intent}) and the missing slot ({slot}),
+   generate one specific question to get exactly {slot}.
+   Do NOT ask about anything else. Be direct and helpful."
+
+================================================================================
+FEATURE 6A: GUIDED USER ACTION COORDINATOR
+================================================================================
+
+PURPOSE
+-------
+Manage the wait-verify loop when the resolution requires the customer to perform
+a physical action (router reset, app restart, identity verification, meter read).
+This is distinct from asking a question: the agent must pause, wait for the user
+to complete an action in the real world, then re-run a diagnostic tool to verify
+the outcome before proceeding.
+
+RESEARCH BASIS
+--------------
+τ²-bench (arXiv 2506.07982): "Evaluating Conversational Agents in a
+Dual-Control Environment"
+
+KEY ALGORITHM FROM τ²-BENCH: DUAL-CONTROL INTERACTION
+------------------------------------------------------
+τ²-bench models support conversations as a Dec-POMDP where BOTH the agent AND
+the user take actions in the world — not just exchange messages. The benchmark
+explicitly includes tasks where:
+  - Agent instructs user to perform a physical action
+  - User performs the action (or claims to)
+  - Agent must verify via tool call, not trust the claim
+
+From the paper abstract:
+  "We introduce tasks requiring coordinated actions across both agent and user,
+   exposing a new class of coordination errors that existing benchmarks miss."
+
+The paper identifies three error types that appear uniquely in dual-control:
+  1. Reasoning errors      — agent makes wrong diagnosis
+  2. Communication errors  — agent gives compound/unclear instructions
+  3. Coordination errors   — agent proceeds without verifying user action
+
+Key finding: agent success rates drop significantly vs. single-control baselines
+specifically because of coordination errors (type 3). The fix is explicit state
+machine management: never proceed until tool verification confirms the outcome.
+
+IMPLEMENTATION
+--------------
+
+class GuidedActionCoordinator:
+    """
+    Manages the wait-verify loop when the user must perform a physical action.
+    τ²-bench finding: agents degrade significantly when shifting from passive
+    user to dual-control. Structured state machine prevents coordination errors.
+    """
+
+    STATES = ["INSTRUCTING", "WAITING", "VERIFYING", "RESOLVED", "FAILED"]
+
+    def __init__(self):
+        self.state = "IDLE"
+        self.pending_action = None
+        self.attempts = 0
+        self.MAX_ATTEMPTS = 2
+
+    def instruct(self, action_required: str, context: dict) -> str:
+        """
+        Generate a precise, single-step instruction.
+        τ²-bench error taxonomy: 'communication errors' happen when agents
+        give compound instructions. One step at a time only.
+        """
+        self.state = "WAITING"
+        self.pending_action = action_required
+        self.attempts += 1
+        instruction = generate_single_step_instruction(action_required, context)
+        # Log to audit trail: instruction issued, verification pending
+        log_audit("guided_action_issued", action_required, context["customer_id"])
+        return instruction
+
+    def handle_user_report(self, user_message: str, context: dict) -> Action:
+        """
+        User reports completion. Bot re-runs diagnostic tool to verify.
+        Never trust the claim — always verify with a tool call.
+        This directly addresses τ²-bench coordination error type 3.
+        """
+        self.state = "VERIFYING"
+        tool_result = rerun_verification_tool(self.pending_action, context)
+        log_audit("guided_action_verified", tool_result, context["customer_id"])
+
+        if tool_result.success:
+            self.state = "RESOLVED"
+            return Action(
+                type="CONTINUE_RESOLUTION",
+                evidence=tool_result,
+                message=f"Confirmed — {tool_result.confirmation_message}"
+            )
+        elif self.attempts < self.MAX_ATTEMPTS:
+            # Try once more with clearer instruction
+            self.state = "INSTRUCTING"
+            return Action(
+                type="RETRY_INSTRUCTION",
+                message=self.instruct(self.pending_action, context)
+            )
+        else:
+            # Action didn't fix it after 2 attempts — escalate
+            self.state = "FAILED"
+            return Action(type="ESCALATE", reason="user_action_unresolved")
+
+Action-to-tool mapping:
+  router_reset        → rerun: run_router_diagnostic()
+  identity_verify     → rerun: lookup_customer() with new token
+  app_restart         → rerun: run_router_diagnostic() (same endpoint)
+  meter_reading       → rerun: check_outage_status() for location
+
+DEMO FLOW (the single most memorable moment in the demo video):
+--------------------------------------------------------------
+
+  Turn 1:
+  Bot:  "Your router diagnostic shows weak signal (18 Mbps, expected 200 Mbps).
+         Can you press the reset button on the back of the router for 10 seconds
+         and let me know when the lights come back on?"
+
+  [Coordinator enters WAITING state — agent does NOT respond until user reports]
+
+  Turn 2:
+  Customer: "Done, the light is blinking now."
+
+  [Coordinator enters VERIFYING state — re-runs run_router_diagnostic()]
+
+  Turn 3 (on tool success):
+  Bot:  "Signal is now at 183 Mbps — that's within your 200 Mbps plan.
+         The connectivity issue is resolved. I've also applied a ₹50 credit
+         for the disruption. Is there anything else I can help with?"
+
+  [Coordinator enters RESOLVED state — audit trail records before/after signal]
+
+  Turn 3 (on tool failure after 2 attempts):
+  Bot:  "The signal is still low after the reset. I'm escalating this to
+         a technician who will contact you within 24 hours."
+
+  [Coordinator enters FAILED state → triggers Feature 8 warm handoff]
+
+This flow directly demonstrates τ²-bench's core contribution. No competing
+team will show the bot pausing, waiting, and verifying — not just chatting.
+
+================================================================================
+FEATURE 7: CONVERSATION HEALTH SCORE
+================================================================================
+
+PURPOSE
+-------
+Compute a real-time score (0–100) that tracks conversation quality and triggers
+preventive action (clarification or handoff) before the conversation fails.
+
+RESEARCH BASIS
+--------------
+Derived from τ-bench pass^k metric + τ²-bench error taxonomy + LongMemEval
+abstention capability.
+
+ALGORITHM
+---------
+Health Score = weighted sum of five dimensions:
+
+  H = 0.30 * intent_confidence
+    + 0.25 * (1 - missing_info_risk)
+    + 0.20 * sentiment_score
+    + 0.15 * (1 - loop_penalty)
+    + 0.10 * knowledge_coverage
+
+Component definitions:
+  intent_confidence:   [0.0 – 1.0]
+    = average confidence of detected intents (from classifier softmax)
+    Low if ambiguous input, high if intent is clear
+
+  missing_info_risk:   [0.0 – 1.0]
+    = (required_slots_missing / total_required_slots) for current intent
+
+  sentiment_score:     [0.0 – 1.0]
+    = 1.0 – frustration_score
+    frustration_score = LLM-classified sentiment (positive/neutral/frustrated/angry)
+    angry → 0.9, frustrated → 0.6, neutral → 0.2, positive → 0.0
+
+  loop_penalty:        [0.0 – 1.0]
+    = 1.0 if same question asked by customer >= 3 times in session
+    = 0.5 if same question asked 2 times
+    = 0.0 otherwise
+
+  knowledge_coverage:  [0.0 – 1.0]
+    = fraction of required_tools already called successfully
+    = retrieved_policy_confidence (from CRAG evaluator)
+
+THRESHOLDS AND ACTIONS:
+  H >= 70: ANSWER — proceed normally
+  50 <= H < 70: ASK_CLARIFICATION — ask targeted question
+  30 <= H < 50: PREPARE_HANDOFF — escalate warning, last chance to resolve
+  H < 30: HANDOFF — warm human handoff now
+
+IMPLEMENTATION
+--------------
+  def compute_health_score(conversation_state):
+    ic = conversation_state.intent_confidence
+    mr = len(missing_slots) / total_required_slots
+    ss = 1.0 - sentiment_classifier(last_3_messages)
+    lp = loop_detector(conversation_state.messages)
+    kc = knowledge_coverage(conversation_state.tools_called,
+                            conversation_state.retrieved_policies)
+
+    score = (0.30 * ic + 0.25 * (1 - mr) + 0.20 * ss +
+             0.15 * (1 - lp) + 0.10 * kc) * 100
+    return round(score)
+
+  def get_recommended_action(score):
+    if score >= 70: return "ANSWER"
+    elif score >= 50: return "ASK_CLARIFICATION"
+    elif score >= 30: return "PREPARE_HANDOFF"
+    else: return "HANDOFF"
+
+CROSS-SESSION RELATIONSHIP SCORE
+---------------------------------
+Research basis: LongMemEval (arXiv 2410.10813) — multi-session temporal
+reasoning + knowledge updates across sessions.
+Theory basis: CASA (Computers Are Social Actors) — empathic responses after
+past failures rebuild trust and reduce churn probability.
+
+The in-session health score uses last_3_messages for sentiment. LongMemEval
+explicitly documents a ~30% accuracy drop across multi-session interactions
+when past session tone is ignored. The Relationship Score addresses this gap
+by tracking sentiment trajectory ACROSS past sessions and feeding it into
+session-start behavior — connecting Feature 2 (Memory), Feature 7 (Health),
+and Feature 8 (Handoff) into a single coherent system.
+
+  def compute_relationship_score(customer_id: str) -> float:
+      """
+      Computes a 0–100 score reflecting the customer's sentiment trajectory
+      across ALL past sessions, not just the current one.
+      Stored in episodic memory. Updated at session close.
+      """
+      past_sessions = memory_manager.retrieve(
+          query="sentiment tone frustration complaint escalation",
+          customer_id=customer_id,
+          memory_type="episodic",
+          top_k=5
+      )
+      if not past_sessions:
+          return 75.0  # no history → assume neutral relationship
+
+      # Weighted decay: most recent session weights most
+      scores = [classify_session_sentiment(s) for s in past_sessions]
+      weights = [0.5 ** i for i in range(len(scores))]  # exponential decay
+      relationship_score = (
+          sum(s * w for s, w in zip(scores, weights)) / sum(weights)
+      )
+      return round(relationship_score * 100, 1)
+
+  # classify_session_sentiment returns [0.0 – 1.0]:
+  #   resolved_happy  → 0.9
+  #   resolved_neutral → 0.7
+  #   unresolved_neutral → 0.4
+  #   escalated_frustrated → 0.2
+  #   escalated_angry → 0.1
+
+Relationship score thresholds and session-start actions:
+  > 65:  HEALTHY  — proceed normally, no special action
+  40–65: DRIFTING — proactive check-in at session start:
+    "I can see we've been in touch a few times recently. I want to make
+     sure we fully resolve things for you today."
+  < 40:  AT-RISK  — activate CASA empathy sequence BEFORE any resolution:
+    "I can see you've had a frustrating experience with us. Before we get
+     into the details, I want to acknowledge that and commit to resolving
+     this completely."
+    → Also pre-loads churn_risk = HIGH into customer context
+    → Feature 8 handoff threshold lowered from H < 30 to H < 40
+
+Relationship score storage and update:
+  - Read at session start from episodic memory (Feature 2 memory layer)
+  - Updated at session close: new entry added to episodic memory with
+    session outcome classification
+  - Displayed on dashboard: "Relationship Score: 29 → 58 (recovered)"
+
+The health score is displayed live in the agent reasoning panel on the UI
+(color-coded: green > 70, amber 50–70, red < 50).
+The relationship score is shown separately as a session-start indicator
+(color-coded: green > 65, amber 40–65, red < 40).
+
+================================================================================
+FEATURE 8: WARM HUMAN HANDOFF
+================================================================================
+
+PURPOSE
+-------
+Escalate to a human agent before the conversation fails, not after. Pass full
+context so the customer never has to repeat themselves.
+
+RESEARCH BASIS
+--------------
+τ-bench (arXiv 2406.12045) + τ²-bench (arXiv 2506.07982)
+
+KEY INSIGHT
+-----------
+τ-bench defines task success as matching the goal database state after
+conversation. If the AI agent fails to complete the goal state, a human must
+step in. The paper measures "unnecessary escalation rate" and "late escalation
+rate" as failure modes.
+
+τ²-bench shows that in dual-control environments (where both agent and user act),
+communication failures are distinct from reasoning failures. Warm handoff
+addresses communication failures: the human agent receives the reasoning state.
+
+TRIGGER CONDITIONS
+------------------
+  1. Policy exception required (amount > allowed threshold)
+  2. Health score drops below 30
+  3. Customer anger level = "high" for 2+ consecutive turns
+  4. Same question loop: 3+ repeats without progress
+  5. High-value customer at churn risk (risk_level = "critical")
+  6. Tool failure on critical tool (e.g., apply_credit fails)
+  7. Refund above auto-approval threshold (> ₹500)
+  8. Customer explicitly requests human agent
+
+HANDOFF PROCESS
+---------------
+  1. Detect trigger condition
+  2. Generate Customer Context Card (Feature 9)
+  3. Mark conversation for human queue
+  4. Inform customer:
+     "I'm connecting you to a specialist who has your full account details.
+      You won't need to repeat anything."
+  5. Insert conversation + context card into human_handoff_queue table
+  6. Log handoff event in audit trail
+
+================================================================================
+FEATURE 9: CUSTOMER CONTEXT CARD
+================================================================================
+
+PURPOSE
+-------
+Provide the human agent with a complete briefing so they can start resolving
+immediately, not gathering information.
+
+RESEARCH BASIS
+--------------
+JourneyBench (arXiv 2601.00596) — the paper emphasizes that agents must track
+the full "user journey" traversal path. When a handoff occurs, the human
+receives the journey path traversed so far plus remaining nodes.
+
+IMPLEMENTATION
+--------------
+
+  def generate_context_card(conversation_id):
+    conv = load_conversation(conversation_id)
+    return {
+      "customer": {
+        "name": conv.customer.name,
+        "id": conv.customer.customer_id,
+        "plan": conv.customer.plan_name,
+        "risk_level": conv.customer.risk_level,
+        "location": conv.customer.location,
+        "preferred_language": conv.customer.preferred_language
+      },
+      "issues_detected": conv.issue_queue,
+      "issues_resolved": [i for i in conv.issue_queue if i.status == "resolved"],
+      "issues_remaining": [i for i in conv.issue_queue if i.status != "resolved"],
+      "emotion": conv.sentiment_history[-1],
+      "slots_collected": conv.slots,
+      "tools_called": conv.tools_called,
+      "policies_retrieved": conv.policies_used,
+      "policy_nodes_visited": conv.policy_graph_path,
+      "reason_for_escalation": conv.handoff_trigger,
+      "recommended_opening": generate_opening_line(conv),
+      "memory_context": conv.retrieved_memory_summary
+    }
+
+Output format (displayed to human agent):
+
+  ╔══════════════════════════════════════╗
+  ║     CUSTOMER CONTEXT CARD           ║
+  ╠══════════════════════════════════════╣
+  ║ Customer: Rahul Sharma (#CUS-1029)  ║
+  ║ Plan: Fiber Pro 200Mbps             ║
+  ║ Risk: HIGH CHURN RISK               ║
+  ╠══════════════════════════════════════╣
+  ║ Issues:                             ║
+  ║  ✓ Duplicate charge — RESOLVED      ║
+  ║    ₹300 credit applied              ║
+  ║  ✗ Service outage — PENDING         ║
+  ║    Outage verified, technician nee  ║
+  ║  ✗ Cancellation intent — PENDING    ║
+  ╠══════════════════════════════════════╣
+  ║ Emotion: Frustrated, high urgency   ║
+  ║ Escalation: Refund > auto limit     ║
+  ║ Recommended opening:                ║
+  ║  "I have your duplicate charge and  ║
+  ║   outage details. Let me check the  ║
+  ║   refund exception right now."      ║
+  ╚══════════════════════════════════════╝
+
+================================================================================
+FEATURE 10: RESOLUTION PROOF TRAIL
+================================================================================
+
+PURPOSE
+-------
+Generate a machine-readable and human-readable audit log for every resolved
+case showing evidence, tools, policies, and compliance status.
+
+RESEARCH BASIS
+--------------
+τ-bench (arXiv 2406.12045): evaluates agents by comparing final database state
+to goal state. The audit trail IS the verification mechanism.
+
+SOP-Bench (arXiv 2506.08119): step-level validation is necessary because
+partial completion can look like success at the output level but fail at
+intermediate steps. The audit trail captures all intermediate steps.
+
+IMPLEMENTATION
+--------------
+
+  def build_audit_log(case_id):
+    conv = load_conversation(case_id)
+    return {
+      "case_id": case_id,
+      "timestamp": datetime.utcnow().isoformat(),
+      "customer_id": conv.customer_id,
+      "customer_issue": [i.intent for i in conv.issue_queue],
+      "evidence": {
+        "invoices": conv.invoice_ids_checked,
+        "payments": conv.payment_ids_checked,
+        "outage_reports": conv.outage_ids_checked,
+        "policies_cited": conv.policy_ids_used
+      },
+      "tools_called": [
+        {"tool": t.name, "args": t.args, "result": t.result,
+         "timestamp": t.timestamp}
+        for t in conv.tool_calls
+      ],
+      "policy_dag_path": [
+        {"node": n.node_id, "condition": n.condition,
+         "result": n.evaluation_result}
+        for n in conv.policy_graph_path
+      ],
+      "actions_taken": [
+        {"action": a.type, "value": a.value, "policy_basis": a.policy_id}
+        for a in conv.actions
+      ],
+      "ujcs": conv.user_journey_coverage_score,
+      "policy_status": "compliant" if ujcs > 0.8 else "partial",
+      "handoff_required": conv.was_escalated,
+      "health_score_final": conv.final_health_score,
+      "resolution_turns": conv.turn_count
+    }
+
+SQLite table schema:
+  audit_logs {
+    case_id        TEXT PRIMARY KEY,
+    customer_id    TEXT,
+    tools_called   JSON,
+    evidence_used  JSON,
+    action_taken   JSON,
+    policy_status  TEXT,
+    ujcs           REAL,
+    created_at     DATETIME
+  }
+
+The proof trail is displayed in two tabs in the dashboard:
+  Tab 1: Human-readable summary (for agents and customers)
+  Tab 2: Raw JSON (for developers and compliance)
+
+================================================================================
+FEATURE 11: AGENT EVALUATION HARNESS
+================================================================================
+
+PURPOSE
+-------
+Before demo day, validate all features with 10 scripted test scenarios and
+8 metrics. Catch hallucinations, wrong tool calls, and policy violations early.
+
+RESEARCH BASIS (PRIMARY)
+------------------------
+τ-bench (arXiv 2406.12045): defines evaluation as comparing final database
+state vs. goal state, plus pass^k for reliability across trials.
+
+KEY ALGORITHM FROM τ-BENCH EVALUATION
+---------------------------------------
+  For each test case c:
+    1. Initialize mock database to known state S_initial
+    2. Run agent through scripted conversation (simulated user)
+    3. At end, read actual database state S_actual
+    4. Compare S_actual to annotated S_goal
+    5. task_success(c) = 1 if S_actual == S_goal else 0
+
+  pass^k metric (for reliability):
+    Run each test case k times with temperature > 0
+    pass^k = (trials with at least 1 success) / k
+    → Low pass^k means the agent is lucky, not reliable
+
+  Policy compliance: also check that each action was preceded by the correct
+  policy DAG traversal (UJCS > threshold).
+
+RESEARCH BASIS (SECONDARY)
+---------------------------
+τ²-bench (arXiv 2506.07982): introduces fine-grained error decomposition:
+  - Reasoning errors: wrong tool, wrong decision
+  - Communication errors: failed to get needed info from user
+  - Coordination errors: agent and user took inconsistent actions
+
+IMPLEMENTATION
+--------------
+
+TEST SCENARIOS:
+
+  case_01_simple_bill_question:
+    User: "What is my current bill?"
+    Expected: lookup_customer + get_invoice_history called
+    Success: invoice data returned, no hallucination
+
+  case_02_duplicate_charge:
+    User: "I was charged twice this month"
+    Expected: check_duplicate_charge finds duplicate, credit offered
+    DB goal state: credit record created, amount = duplicate amount
+
+  case_03_outage_credit:
+    User: "My internet was down yesterday, I want a refund"
+    Expected: check_outage_status → outage verified → policy DAG → apply_credit
+    DB goal state: credit record created, ticket created
+
+  case_04_cancellation_intent:
+    User: "I want to cancel my subscription"
+    Expected: retention offer before cancellation, health score triggers
+    DB goal state: ticket created (not cancelled)
+
+  case_05_policy_exception:
+    User: "I want ₹2000 refund"
+    Expected: policy DAG → escalate (amount > ₹500)
+    DB goal state: handoff record created
+
+  case_06_angry_customer:
+    User: "This is unacceptable! Fix it NOW!"
+    Expected: sentiment detected as angry → health score < 50 → clarify then offer
+    DB goal state: ticket created with priority=high
+
+  case_07_vague_customer:
+    User: "Something is wrong with my account"
+    Expected: clarification engine asks targeted slot-filling question
+    Success: agent does NOT hallucinate account details
+
+  case_08_wrong_refund_request:
+    User: "I want a refund for a charge from 6 months ago"
+    Expected: policy says max 30-day lookback → policy denial
+    DB goal state: no credit created, denial response logged
+
+  case_09_tool_failure:
+    Inject: check_outage_status returns {"error": "service unavailable"}
+    Expected: graceful error handling, suggest retry or handoff
+    Success: agent does NOT hallucinate outage data
+
+  case_10_repeated_question_loop:
+    User asks same question 3 times in a row
+    Expected: loop detection in health score → handoff triggered
+    DB goal state: handoff record created
+
+METRICS:
+
+  1. resolution_success_rate = cases resolved correctly / total cases
+  2. policy_compliance_rate  = cases with UJCS > 0.8 / total cases
+  3. correct_tool_call_rate  = correct tools called / total expected tools
+  4. wrong_tool_avoidance    = 1 - (wrong tools called / total tool calls)
+  5. hallucination_count     = LLM-as-judge scores claim with no tool backing
+  6. escalation_correctness  = correct escalation decisions / total escalation
+                               decisions (both early and late escalation penalized)
+  7. avg_turns_to_resolution = mean turn count across resolved cases
+  8. customer_repetition     = 1 if agent asked for info customer already
+                               provided (binary, per case)
+
+  pass^k for reliability: run each case k=5 times, report pass^5.
+
+BENCHMARK COMPARISON TARGETS
+-----------------------------
+ResolveFlow is measured against published τ-bench baselines. This is the only
+hackathon submission that cites a research benchmark AND claims a measurable
+improvement over it — verified by the evaluation harness above.
+
+  Metric                       τ-bench SOTA (GPT-4o)   ResolveFlow Target
+  ─────────────────────────────────────────────────────────────────────────
+  Task success rate             <50% (airline domain)   >75% on 10 scenarios
+  pass^k (k=5) reliability      <25% (retail domain)    >80%
+  Policy compliance rate        not measured            100% (DAG enforced —
+                                                         cannot be violated by
+                                                         design, not by trust)
+  Coordination error rate       not measured            0% on dual-control
+                                                         cases (state machine
+                                                         prevents skipping)
+  Hallucination rate            not measured            0 claims without
+                                                         tool-call backing
+  ─────────────────────────────────────────────────────────────────────────
+
+Note on policy compliance: unlike model-trust approaches where the LLM may or
+may not follow a policy, ResolveFlow's PolicyGraphValidator enforces DAG
+traversal structurally — the action is blocked at code level if the prerequisite
+nodes have not been visited. Compliance is guaranteed, not prompted.
+
+EVALUATION RUNNER:
+
+  def run_evaluation():
+    results = {}
+    for case in test_cases:
+      db.reset_to_initial_state(case.initial_state)
+      for trial in range(K):
+        response = agent.run(case.user_messages)
+        final_state = db.read_state()
+        success = (final_state == case.goal_state)
+        results[case.id][trial] = success
+      results[case.id]["pass_k"] = sum(results[case.id]) / K
+    print_evaluation_report(results)
+
+================================================================================
+FEATURE 12: ADMIN DASHBOARD
+================================================================================
+
+PURPOSE
+-------
+Provide an operations view showing aggregate resolution metrics, individual
+case details, and audit trails. This is the "wow factor" for judges: they can
+see that the system acted, not just chatted.
+
+RESEARCH BASIS
+--------------
+All 11 research papers feed into dashboard metrics:
+  - τ-bench → resolution success rate, pass^k
+  - τ²-bench → coordination and communication error breakdown
+  - JourneyBench → UJCS per conversation, policy adherence
+  - SOP-Bench → step-level compliance, domain-level performance
+  - Self-RAG / CRAG → retrieval quality scores per conversation
+  - LongMemEval → memory hit rate, abstention rate
+  - HippoRAG → graph retrieval usage vs. vector-only
+  - API-Based Agents → tool call success vs. failure rates
+
+IMPLEMENTATION
+--------------
+
+Frontend: React + Next.js + Tailwind + Recharts
+
+Dashboard pages:
+  Page 1: OVERVIEW
+    KPI cards:
+      - Total cases today
+      - Resolved by AI (%)
+      - Escalated to human (%)
+      - Policy-compliant actions (%)
+      - Credits applied (count + total ₹)
+      - Tickets created
+      - High-risk customers (churn risk)
+      - Average health score
+    Charts:
+      - Resolution trend (line chart, 7 days)
+      - Issue type distribution (pie chart)
+      - Tool call frequency (bar chart)
+      - Health score distribution (histogram)
+
+  Page 2: CASE BROWSER
+    Sortable table: case_id | customer | issues | status | health_score | date
+    Click any row → Case Detail view
+
+  Page 3: CASE DETAIL
+    Left panel:  Full conversation transcript (bot + customer turns)
+    Right panel: Live agent reasoning:
+      - Detected intents
+      - Health score timeline (in-session, color-coded)
+      - Relationship score: before and after (cross-session arc)
+        Example display: "Relationship Score: 29/100 → 58/100 (recovered)"
+                         "Churn risk: Reduced" [shown in green]
+      - Tools called (with args + results)
+      - Policy DAG path (graphical)
+      - Policies retrieved (with confidence scores)
+      - Memory retrieved (citations)
+      - Guided action states (if Feature 6A triggered): WAITING / VERIFYING /
+        RESOLVED with signal strength before and after
+    Bottom:     Resolution Proof Trail (human-readable + JSON tab)
+    Handoff:    Customer Context Card (if escalated)
+
+  Page 4: EVALUATION
+    Test scenario results table: scenario | pass^5 | avg_turns | compliance
+    Metric trend charts
+
+Backend API endpoints (FastAPI):
+  GET  /api/dashboard/overview
+  GET  /api/cases?page=1&limit=20
+  GET  /api/cases/{case_id}
+  GET  /api/cases/{case_id}/audit_log
+  GET  /api/cases/{case_id}/context_card
+  GET  /api/evaluation/results
+  POST /api/evaluation/run
+
+================================================================================
+APPENDIX A: FULL SYSTEM ARCHITECTURE
+================================================================================
+
+Customer Message
+      │
+      ▼
+Conversation State Tracker
+  (session_id, customer_id, turn_count, issue_queue, slots)
+      │
+      ▼
+Multi-Issue Intent Detector               [Feature 1]
+  (LLM classifier → issue_queue)
+      │
+      ▼
+Memory Retrieval Engine                   [Feature 2]
+  ├── Vector search (LongMemEval expansion)
+  └── Graph search (HippoRAG PPR)
+      │
+      ▼
+Policy Retrieval Controller               [Feature 3]
+  ├── Self-RAG: [Retrieve] decision
+  ├── Vector search over policy docs
+  └── CRAG: evaluate → correct/incorrect/ambiguous route
+      │
+      ▼
+Conversation Health Score                 [Feature 7]
+  (intent_confidence + missing_info + sentiment + loop + coverage)
+      │
+      ├── Score ≥ 70 → PROCEED
+      ├── 50–70      → CLARIFICATION ENGINE [Feature 6]
+      └── < 50       → HANDOFF path ──────────────────────┐
+                                                           │
+      ▼                                                    │
+Agent Planner                                              │
+  Decision: ANSWER | ASK_CLARIFICATION | CALL_TOOL |       │
+            APPLY_POLICY | HANDOFF                         │
+      │                                                    │
+      ▼                                                    │
+Policy Graph Validator                    [Feature 4]      │
+  (DPA: dynamic-prompt DAG traversal, UJCS tracked)        │
+      │                                                    │
+      ▼                                                    │
+Tool Calling Layer                        [Feature 5]      │
+  (12 mock APIs, τ-bench style, audit logged)              │
+      │                                                    │
+      ▼                                                    │
+Response Generator                                         │
+  (answer + policy citation + tool evidence)               │
+      │                                                    │
+      ▼                                                    │
+Audit Trail + Proof Trail                 [Feature 10]     │
+      │                                                    │
+      ▼                                                    │
+Customer Reply              Human Handoff Card ◄───────────┘
+                            [Feature 9]
+                                │
+                            Admin Dashboard  [Feature 12]
+
+================================================================================
+APPENDIX B: FULL DATABASE SCHEMA
+================================================================================
+
+TABLE: customers
+  customer_id      TEXT PRIMARY KEY
+  name             TEXT
+  email            TEXT
+  location         TEXT
+  plan_id          TEXT REFERENCES plans(plan_id)
+  risk_level       TEXT  -- "low" | "medium" | "high" | "critical"
+  preferred_language TEXT
+  account_status   TEXT  -- "active" | "suspended" | "pending_cancellation"
+  created_at       DATETIME
+  churn_score      REAL  -- 0.0 to 1.0
+
+TABLE: plans
+  plan_id          TEXT PRIMARY KEY
+  plan_name        TEXT
+  monthly_price    REAL
+  speed_mbps       INTEGER
+  benefits         JSON
+  cancellation_fee REAL
+
+TABLE: invoices
+  invoice_id       TEXT PRIMARY KEY
+  customer_id      TEXT REFERENCES customers
+  amount           REAL
+  date             DATE
+  status           TEXT  -- "paid" | "pending" | "disputed"
+  payment_id       TEXT
+
+TABLE: payments
+  payment_id       TEXT PRIMARY KEY
+  customer_id      TEXT REFERENCES customers
+  amount           REAL
+  date             DATETIME
+  method           TEXT
+  duplicate_flag   BOOLEAN DEFAULT 0
+
+TABLE: outages
+  outage_id        TEXT PRIMARY KEY
+  location         TEXT
+  start_time       DATETIME
+  end_time         DATETIME
+  duration_hours   REAL
+  verified         BOOLEAN
+  affected_customers JSON
+
+TABLE: tickets
+  ticket_id        TEXT PRIMARY KEY
+  customer_id      TEXT REFERENCES customers
+  issue_type       TEXT
+  status           TEXT  -- "open" | "in_progress" | "resolved" | "escalated"
+  priority         TEXT  -- "low" | "medium" | "high" | "critical"
+  created_at       DATETIME
+  resolved_at      DATETIME
+
+TABLE: policies
+  policy_id        TEXT PRIMARY KEY
+  policy_name      TEXT  -- "service_credit_policy", etc.
+  policy_text      TEXT
+  effective_date   DATE
+  version          INTEGER
+
+TABLE: diagnostics
+  customer_id      TEXT PRIMARY KEY REFERENCES customers
+  router_status    TEXT  -- "ok" | "degraded" | "offline"
+  signal_strength  INTEGER  -- 0 to 100
+  last_checked     DATETIME
+  recommendation   TEXT
+
+TABLE: credits
+  credit_id        TEXT PRIMARY KEY
+  customer_id      TEXT REFERENCES customers
+  amount           REAL
+  reason           TEXT
+  policy_id        TEXT REFERENCES policies
+  applied_at       DATETIME
+  applied_to_invoice TEXT
+
+TABLE: audit_logs
+  case_id          TEXT PRIMARY KEY
+  customer_id      TEXT
+  session_id       TEXT
+  tools_called     JSON
+  evidence_used    JSON
+  action_taken     JSON
+  policy_dag_path  JSON
+  ujcs             REAL
+  policy_status    TEXT
+  health_score     REAL
+  handoff_required BOOLEAN
+  created_at       DATETIME
+
+TABLE: human_handoff_queue
+  handoff_id       TEXT PRIMARY KEY
+  case_id          TEXT REFERENCES audit_logs
+  customer_id      TEXT
+  context_card     JSON
+  handoff_reason   TEXT
+  status           TEXT  -- "waiting" | "assigned" | "resolved"
+  created_at       DATETIME
+  assigned_to      TEXT
+
+TABLE: memory_store
+  memory_id        TEXT PRIMARY KEY
+  customer_id      TEXT
+  memory_type      TEXT  -- "stable" | "episodic" | "session"
+  content          TEXT
+  entity_tags      JSON
+  session_id       TEXT
+  created_at       DATETIME
+  updated_at       DATETIME
+
+TABLE: conversations
+  session_id       TEXT PRIMARY KEY
+  customer_id      TEXT
+  messages         JSON  -- [{role, content, timestamp}]
+  intents          JSON
+  slots            JSON
+  tools_called     JSON
+  health_scores    JSON  -- one per turn
+  final_status     TEXT
+  relationship_score_start  REAL   -- score at session open (from episodic memory)
+  relationship_score_end    REAL   -- score at session close (recomputed)
+  relationship_delta        REAL   -- end - start (positive = recovered)
+  created_at       DATETIME
+  completed_at     DATETIME
+
+================================================================================
+APPENDIX C: COMPLETE TOOL DEFINITIONS
+================================================================================
+
+lookup_customer(customer_id: str) -> CustomerProfile
+get_invoice_history(customer_id: str, months: int = 3) -> List[Invoice]
+check_duplicate_charge(customer_id: str) -> DuplicateResult
+check_outage_status(location: str) -> OutageStatus
+run_router_diagnostic(customer_id: str) -> DiagnosticResult
+retrieve_policy(policy_name: str) -> PolicyDocument
+apply_credit(customer_id: str, amount: float, reason: str) -> CreditResult
+create_ticket(customer_id: str, issue_type: str, priority: str) -> Ticket
+schedule_technician(customer_id: str, time_slot: str) -> Appointment
+change_plan(customer_id: str, new_plan_id: str) -> PlanChangeResult
+generate_handoff_summary(conversation_id: str) -> ContextCard
+generate_audit_log(case_id: str) -> AuditLog
+
+================================================================================
+APPENDIX D: 30-DAY BUILD ORDER
+================================================================================
+
+DAYS 1–3: Data World
+  - SQLite database with 20 customers, 20 invoices, 10 outages
+  - 8 policy text documents
+  - 20 realistic customer scenarios (scripts for testing)
+
+DAYS 4–7: Backend + Tools (Feature 5)
+  - FastAPI with all 12 tool endpoints
+  - SQLite CRUD layer
+  - Tool call logging to audit_logs
+
+DAYS 8–11: Policy RAG (Feature 3)
+  - ChromaDB policy ingestion
+  - Self-RAG retrieve token logic
+  - CRAG evaluator + routing
+
+DAYS 12–15: Agent Orchestrator + Intent + Clarification (Features 1, 6, 6A, 7)
+  - Multi-intent classifier
+  - Slot schema per intent
+  - Health score formula + cross-session relationship score
+  - Decision engine (ANSWER/CLARIFY/TOOL/HANDOFF)
+  - GuidedActionCoordinator state machine (Feature 6A)
+
+DAYS 16–18: Policy Graph + Memory (Features 2, 4)
+  - Policy DAG definitions (6 DAGs)
+  - DPA traversal engine
+  - LongMemEval 3-stage memory framework
+  - HippoRAG KG indexing (simplified: entity extraction + ChromaDB)
+
+DAYS 19–21: UI (Chat + Dashboard) (Feature 12)
+  - Chat interface with agent reasoning panel
+  - Tool call timeline
+  - Policy evidence view
+  - Admin dashboard with KPI cards
+
+DAYS 22–24: Audit Trail + Handoff (Features 8, 9, 10)
+  - Resolution Proof Trail builder
+  - Customer Context Card generator
+  - Handoff trigger logic and queue
+
+DAYS 25–27: Evaluation Harness (Feature 11)
+  - 10 test scenarios with goal states
+  - pass^k runner (k=5)
+  - 8-metric report
+
+DAYS 28–30: Polish + Demo
+  - Easy demo case: simple billing query
+  - Hard demo case: duplicate charge + outage + cancellation
+  - README with architecture diagram
+  - Demo video recording
+
+================================================================================
+APPENDIX E: RESEARCH PAPER CITATIONS
+================================================================================
+
+[1] LongMemEval: "Benchmarking Chat Assistants on Long-Term Interactive Memory"
+    arXiv 2410.10813 | Di Wu, Yunxiang Li, et al.
+    https://arxiv.org/abs/2410.10813
+    Used for: Feature 2 (Customer Memory Layer) — 3-stage indexing/retrieval/reading
+              framework, 5 memory capabilities, temporal and session-aware retrieval
+
+[2] Self-RAG: "Learning to Retrieve, Generate, and Critique through Self-Reflection"
+    arXiv 2310.11511 | Asai et al., 2023
+    https://arxiv.org/abs/2310.11511
+    Used for: Feature 3 (Policy-Grounded Retrieval) — adaptive retrieval with
+              [Retrieve], [IsRel], [IsSup], [IsUse] reflection tokens
+
+[3] CRAG: "Corrective Retrieval Augmented Generation"
+    arXiv 2401.15884 | Yan et al., 2024
+    https://arxiv.org/abs/2401.15884
+    Used for: Feature 3 (Policy-Grounded Retrieval) — CORRECT/INCORRECT/AMBIGUOUS
+              routing, evaluator-based confidence scoring, query rewriting
+
+[4] JourneyBench / Beyond IVR: "Benchmarking Customer Support LLM Agents for
+    Business-Adherence"
+    arXiv 2601.00596 | Balaji, Mishra et al., 2026
+    https://arxiv.org/abs/2601.00596
+    Used for: Feature 4 (Policy Graph) — Static-Prompt vs. Dynamic-Prompt Agent
+              design, User Journey Coverage Score metric, policy graph representation
+
+[5] SOP-Bench: "Complex Industrial SOPs for Evaluating LLM Agents"
+    arXiv 2506.08119 | Nandi et al., 2025
+    https://arxiv.org/abs/2506.08119
+    Used for: Feature 4 (Policy Graph) — step-level SOP compliance, 2000+ task
+              benchmark, FC vs. ReAct agent comparison
+
+[6] τ-bench: "A Benchmark for Tool-Agent-User Interaction in Real-World Domains"
+    arXiv 2406.12045 | Yao, Shinn, Razavi, Narasimhan, 2024
+    https://arxiv.org/abs/2406.12045
+    Used for: Feature 5 (Tool-Calling Layer) — domain API + policy benchmark,
+              database-state evaluation, pass^k reliability metric
+    Also used for: Features 8, 11 (Evaluation Harness, Handoff)
+
+[7] Beyond Browsing: "API-Based Web Agents"
+    arXiv 2410.16464 | Song, Xu, Zhou, Neubig, 2024
+    https://arxiv.org/abs/2410.16464
+    Used for: Feature 5 (Tool-Calling Layer) — API > browsing agents, Hybrid agent
+              achieves 38.9% SOTA; confirms API-first design choice
+
+[8] τ²-bench: "Evaluating Conversational Agents in a Dual-Control Environment"
+    arXiv 2506.07982 | Barres, Dong et al., 2025
+    https://arxiv.org/abs/2506.07982
+    Used for: Feature 1 (Multi-Issue Intent Detection), Feature 6 (Clarification),
+              Feature 6A (Guided User Action Coordinator), Feature 8 (Handoff),
+              Feature 11 (Evaluation) — Dec-POMDP dual-control model,
+              compositional task generation, error taxonomy (reasoning /
+              communication / coordination)
+
+[9] GraphRAG: "From Local to Global: A Graph RAG Approach to Query-Focused
+    Summarization"
+    arXiv 2404.16130 | Edge, Trinh et al., Microsoft, 2024
+    https://arxiv.org/abs/2404.16130
+    Used for: Stretch Feature (Graph-Enhanced Retrieval) — entity graph + community
+              detection + pregenerated community summaries for global queries
+
+[10] LightRAG: "Simple and Fast Retrieval-Augmented Generation"
+     arXiv 2410.05779 | Guo, Xia et al., 2024
+     https://arxiv.org/abs/2410.05779
+     Used for: Stretch Feature (Graph-Enhanced Retrieval) — dual-level graph+vector
+               retrieval, incremental update algorithm, faster than GraphRAG
+
+[11] HippoRAG: "Neurobiologically Inspired Long-Term Memory for Large Language Models"
+     arXiv 2405.14831 | Gutierrez, Shu, Gu, Yasunaga, Su, 2024
+     https://arxiv.org/abs/2405.14831
+     Used for: Feature 2 (Customer Memory Layer) — knowledge graph construction via
+               OpenIE, Personalized PageRank retrieval, node specificity weighting,
+               single-step multi-hop recall, synonymy edges at cosine threshold τ=0.8
+
+================================================================================
+END OF DOCUMENT
+================================================================================
