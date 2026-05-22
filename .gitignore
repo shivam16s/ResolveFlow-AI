@@ -1,7 +1,11 @@
 __pycache__/
 *.py[cod]
+.env
 
 data/*.db
 data/*.db-*
+data/chroma/
+data/chroma_test*/
+data/chroma_debug*/
 *.db
 *.db-*

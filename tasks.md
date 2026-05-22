@@ -17,28 +17,28 @@ Mark a task done by changing `[ ]` to `[x]`.
 
 ## Feature 1 — Multi-Issue Intent Detection (Days 4–6)
 
-- [ ] LLM intent classifier with structured JSON output
-- [ ] Detect multiple intents from single message
-- [ ] Build `issue_queue` with priority ordering
-- [ ] Sequential resolution loop (one issue at a time)
-- [ ] Acknowledgment response covers all detected issues
+- [x] LLM intent classifier with structured JSON output
+- [x] Detect multiple intents from single message
+- [x] Build `issue_queue` with priority ordering
+- [x] Sequential resolution loop (one issue at a time)
+- [x] Acknowledgment response covers all detected issues
 
 ---
 
 ## Feature 2 — Customer Memory Layer (Days 7–10)
 
-- [ ] `decompose_to_memory_units()` — split session into atomic facts
-- [ ] Embed and store in ChromaDB with metadata (type, timestamp, customer_id)
-- [ ] LongMemEval Stage 2: `fact_augmented_expansion()` query expansion
-- [ ] LongMemEval Stage 2: `time_aware_expansion()` temporal query expansion
-- [ ] Vector search + BM25 with rank fusion
-- [ ] HippoRAG: OpenIE triple extraction via LLM (1-shot prompt)
-- [ ] HippoRAG: Build/update `memory_graph` table with nodes + edges
-- [ ] HippoRAG: Synonymy edges at cosine similarity τ = 0.8
-- [ ] HippoRAG: PPR retrieval — personalized vector + damping 0.5
-- [ ] LongMemEval Stage 3: `llm_read_with_citation()` with abstention
-- [ ] `MemoryManager.index_session()` — called at session close
-- [ ] `MemoryManager.retrieve()` — merge vector + graph results
+- [x] `decompose_to_memory_units()` — split session into atomic facts
+- [x] Embed and store in ChromaDB with metadata (type, timestamp, customer_id)
+- [x] LongMemEval Stage 2: `fact_augmented_expansion()` query expansion
+- [x] LongMemEval Stage 2: `time_aware_expansion()` temporal query expansion
+- [x] Vector search + BM25 with rank fusion
+- [x] HippoRAG: OpenIE triple extraction via LLM (1-shot prompt)
+- [x] HippoRAG: Build/update `memory_graph` table with nodes + edges
+- [x] HippoRAG: Synonymy edges at cosine similarity τ = 0.8
+- [x] HippoRAG: PPR retrieval — personalized vector + damping 0.5
+- [x] LongMemEval Stage 3: `llm_read_with_citation()` with abstention
+- [x] `MemoryManager.index_session()` — called at session close
+- [x] `MemoryManager.retrieve()` — merge vector + graph results
 
 ---
 

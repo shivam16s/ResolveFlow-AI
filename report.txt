@@ -1,0 +1,371 @@
+ResolveFlow AI Implementation Report
+====================================
+
+Foundation
+----------
+
+1. Create SQLite schema (13 tables - see Appendix B)
+
+Implemented and ticked the schema task.
+
+Added backend/db/schema.sql and backend/db/init_db.py with:
+- 13 core SQLite tables for plans, customers, payments, invoices, outages, tickets, policies, diagnostics, credits, audit logs, human handoff queue, memory store, and conversations.
+- Foreign keys, CHECK constraints, default values, and useful indexes.
+- Idempotent database initialization.
+
+Verified:
+- Initialized SQLite schema successfully.
+- Confirmed the schema creates exactly 13 application tables.
+
+
+2. Seed 20 customers with realistic telecom data
+
+Implemented and ticked the customer seed task.
+
+Added backend/db/seed_customers.py with:
+- 20 realistic telecom customer profiles.
+- Multiple plans, locations, risk levels, preferred languages, account statuses, and churn scores.
+- Idempotent seed behavior.
+
+Verified:
+- Seed script populated 20 customers and 5 plans.
+- Checked customer distribution and repeatable seeding.
+
+
+3. Seed 20 invoices, payment records, duplicate charge scenario
+
+Implemented and ticked the billing seed task.
+
+Added backend/db/seed_billing.py with:
+- 20 invoices.
+- 21 payment records.
+- Explicit duplicate-charge scenario for CUST-1001 / INV-8821 with duplicate payment records.
+- Paid, pending, and disputed billing states.
+
+Verified:
+- Seed script populated invoice and payment records.
+- Confirmed duplicate charge scenario is present and queryable.
+
+
+4. Seed 10 outage records (verified + unverified)
+
+Implemented and ticked the outage seed task.
+
+Added backend/db/seed_outages.py with:
+- 10 outage records.
+- Mix of verified and unverified outages.
+- A demo verified Chennai Zone-04 outage affecting CUST-1001 and CUST-1020.
+- Duration, location, and affected-customer metadata.
+
+Verified:
+- Seed script populated 10 outage records.
+- Confirmed verified and unverified outage coverage.
+
+
+5. Write 8 policy text documents
+
+Implemented and ticked the policy document task.
+
+Added 8 policy files under docs/policies:
+- service_credit_policy.md
+- refund_policy.md
+- duplicate_charge_policy.md
+- cancellation_policy.md
+- technician_visit_policy.md
+- plan_change_policy.md
+- escalation_policy.md
+- payment_failure_policy.md
+
+Verified:
+- Confirmed all policy documents exist with policy IDs and structured sections.
+
+
+6. Write 20 customer test scenario scripts
+
+Implemented and ticked the scenario task.
+
+Added 20 scenario JSON files under docs/scenarios covering:
+- Simple bill questions.
+- Duplicate charges.
+- Verified and unverified outage credit cases.
+- Cancellation intent.
+- Technician requests.
+- Vague or angry customers.
+- Refund exceptions.
+- Plan changes.
+- Payment retry guidance.
+- Human handoff.
+- Tool failure and repeated-question loop cases.
+
+Verified:
+- Validated scenario JSON files.
+- Confirmed customer IDs, policy IDs, and escalation coverage.
+
+
+Feature 1 - Multi-Issue Intent Detection
+----------------------------------------
+
+1. LLM intent classifier with structured JSON output
+
+Implemented and ticked the classifier task.
+
+Added backend/agent/intent_classifier.py with:
+- IntentClassification dataclass.
+- IntentClassifier with injectable LLM client.
+- Strict structured JSON schema.
+- Validation for allowed intents, urgency, confidence, emotion, and evidence terms.
+- Deterministic fallback classifier for local tests.
+
+Verified:
+- python -B scripts\test_intent_classifier.py
+
+
+2. Detect multiple intents from single message
+
+Implemented and ticked the multi-intent task.
+
+Added support for detecting multiple telecom support issues in one customer message, including:
+- duplicate_charge
+- billing_dispute
+- service_outage
+- router_issue
+- plan_change
+- cancellation_intent
+- refund_request
+- technician_request
+- general_query
+
+Verified:
+- python -B scripts\test_intent_classifier.py
+- Hard demo classification detects duplicate charge + outage + cancellation intent in one message.
+
+
+3. Build issue_queue with priority ordering
+
+Implemented and ticked the issue queue task.
+
+Added backend/agent/issue_queue.py with:
+- Issue dataclass.
+- IssueQueue container.
+- build_issue_queue(...)
+- Priority ordering for multi-issue messages.
+- Duplicate billing-dispute suppression when duplicate_charge is already present.
+- Required-slot metadata per intent.
+
+Verified:
+- python -B scripts\test_issue_queue.py
+
+
+4. Sequential resolution loop (one issue at a time)
+
+Implemented and ticked the sequential loop task.
+
+Added backend/agent/resolution_loop.py with:
+- SequentialResolutionLoop.
+- IssueResolution, IssueTransition, and ResolutionRun dataclasses.
+- One-issue-at-a-time processing.
+- pending -> in_progress -> resolved/escalated state transitions.
+- Optional stop_on_escalation behavior.
+
+Verified:
+- python -B scripts\test_resolution_loop.py
+
+
+5. Acknowledgment response covers all detected issues
+
+Implemented and ticked the acknowledgment task.
+
+Added backend/agent/acknowledgment.py with:
+- generate_acknowledgment(issue_queue)
+- Human-friendly acknowledgment that names all detected issues before starting sequential resolution.
+- Hard-demo response for duplicate charge + service problem + cancellation risk.
+
+Verified:
+- python -B scripts\test_acknowledgment.py
+
+
+Feature 2 - Customer Memory Layer
+---------------------------------
+
+1. decompose_to_memory_units() - split session into atomic facts
+
+Implemented and ticked the memory decomposition task.
+
+Added backend/agent/memory.py with:
+- MemoryUnit dataclass.
+- decompose_to_memory_units(...)
+- Atomic fact splitting from strings, message lists, and role/content transcript turns.
+- Memory type labels: stable, episodic, and session.
+- Topic inference and entity tags.
+
+Verified:
+- python -B scripts\test_memory_decomposition.py
+
+
+2. Embed and store in ChromaDB with metadata
+
+Implemented and ticked the ChromaDB storage task.
+
+Added backend/agent/memory_store.py with:
+- ChromaMemoryStore.
+- Real ChromaDB PersistentClient storage.
+- Default ONNX MiniLM embedding function through Chroma.
+- Metadata storage for customer_id, session_id, memory_type, topic, timestamp, source role, source turn index, confidence, and entity tags.
+
+Verified:
+- python -B scripts\test_memory_store.py
+- Real ChromaDB persistence and embedding smoke test passed.
+
+
+3. LongMemEval Stage 2: fact_augmented_expansion() query expansion
+
+Implemented and ticked the fact expansion task.
+
+Added fact_augmented_expansion(...) in backend/agent/memory.py with:
+- Telecom domain query expansion.
+- Billing, duplicate charge, outage, router, cancellation, refund, technician, handoff, and plan-change terms.
+- Identifier preservation for IDs like CUST, INV, PAY, OUT, TICK, and CASE.
+
+Verified:
+- python -B scripts\test_memory_query_expansion.py
+
+
+4. LongMemEval Stage 2: time_aware_expansion() temporal query expansion
+
+Implemented and ticked the temporal expansion task.
+
+Added time_aware_expansion(...) in backend/agent/memory.py with:
+- Date anchors for today, yesterday, this week, last week, this month, last month, recent, and past.
+- ISO date range expansion for temporal retrieval.
+
+Verified:
+- python -B scripts\test_memory_query_expansion.py
+
+
+5. Vector search + BM25 with rank fusion
+
+Implemented and ticked the hybrid retrieval task.
+
+Added hybrid_search(...) in backend/agent/memory_store.py with:
+- Real Chroma vector search.
+- BM25 lexical ranking over persisted memory documents.
+- Reciprocal rank fusion between vector and BM25 results.
+- MemorySearchResult dataclass with vector rank, BM25 rank, fused score, distances, and metadata.
+
+Verified:
+- python -B scripts\test_memory_store.py
+
+
+6. HippoRAG: OpenIE triple extraction via LLM (1-shot prompt)
+
+Implemented and ticked the task.
+
+Added real LLM-backed OpenIE extraction:
+- backend/agent/openie.py builds a strict 1-shot prompt and parses validated triples.
+- backend/agent/llm_client.py reads .env and calls Gemini generateContent.
+- Exported the OpenIE API from backend/agent/__init__.py.
+- Added tests in scripts/test_openie_extraction.py.
+
+Verified:
+- python -B scripts\test_openie_extraction.py
+- python -B scripts\test_intent_classifier.py
+- python -B scripts\test_memory_decomposition.py
+- Live Gemini OpenIE call succeeded and returned triples for duplicate charge and outage facts.
+
+
+7. HippoRAG: Build/update memory_graph table with nodes + edges
+
+Implemented and ticked the memory_graph task.
+
+Added backend/agent/memory_graph.py with:
+- Idempotent memory_graph table creation.
+- Node upserts per customer_id + node_id.
+- Directed relation edges from OpenIE triples.
+- Passage tracking via memory_id.
+- Edge dedupe and evidence/weight merging.
+- Exported API from backend/agent/__init__.py.
+- Added tests in scripts/test_memory_graph.py.
+
+Verified:
+- python -B scripts\test_memory_graph.py
+- python -B scripts\test_openie_extraction.py
+
+
+8. HippoRAG: Synonymy edges at cosine similarity tau = 0.8
+
+Implemented and ticked the synonymy-edge task.
+
+Added to backend/agent/memory_graph.py:
+- add_synonymy_edges(...)
+- Real Chroma default embedding support.
+- Cosine similarity calculation.
+- Bidirectional synonymy edges when similarity >= 0.8.
+- Idempotent edge merging with passages, evidence, and max weight.
+- Updated exports in backend/agent/__init__.py.
+- Expanded scripts/test_memory_graph.py.
+
+Verified:
+- python -B scripts\test_memory_graph.py
+- python -B scripts\test_openie_extraction.py
+- Real Chroma embedding smoke test: duplicate charge ~ duplicate charges scored 0.9317, creating synonymy edges.
+
+
+9. HippoRAG: PPR retrieval - personalized vector + damping 0.5
+
+Implemented and ticked the HippoRAG PPR retrieval task.
+
+Added to backend/agent/memory_graph.py:
+- ppr_retrieve(...)
+- Personalized query vector over graph nodes.
+- PPR with default damping 0.5.
+- Weighted graph traversal over relation + synonymy edges.
+- Passage scoring from activated nodes.
+- Embedding-based query-to-node matching via Chroma default encoder.
+- Updated exports in backend/agent/__init__.py.
+- Expanded scripts/test_memory_graph.py.
+
+Verified:
+- python -B scripts\test_memory_graph.py
+- python -B scripts\test_openie_extraction.py
+- python -B scripts\test_memory_decomposition.py
+- Real embedding smoke test retrieved the correct duplicate-charge memory via PPR.
+
+
+10. LongMemEval Stage 3: llm_read_with_citation() with abstention
+
+Verified this task was already implemented and ticked.
+
+Confirmed backend/agent/memory_reader.py has:
+- llm_read_with_citation()
+- Strict JSON prompt.
+- Required memory citations.
+- Automatic abstention when evidence is missing or citation IDs are invalid.
+- Real Gemini fallback via .env.
+
+Verified:
+- python -B scripts\test_memory_reader.py
+- python -B scripts\test_memory_graph.py
+- Live Gemini check passed: it answered a billing-memory question with citation mem-live-001.
+
+
+11. MemoryManager.index_session() - called at session close
+
+Implemented and ticked MemoryManager.index_session().
+
+Added backend/agent/memory_manager.py with:
+- MemoryManager.index_session()
+- Session transcript decomposition.
+- Chroma vector storage via existing ChromaMemoryStore.
+- OpenIE triple extraction per memory unit.
+- memory_graph node/edge updates.
+- synonymy enrichment after indexing.
+- conversation close update via final_status + completed_at.
+- structured MemoryIndexSummary.
+
+Added tests in scripts/test_memory_manager.py and exported the manager from backend/agent/__init__.py.
+
+Verified:
+- python -B scripts\test_memory_manager.py
+- python -B scripts\test_memory_graph.py
+- python -B scripts\test_openie_extraction.py
+- python -B scripts\test_memory_reader.py

@@ -1,0 +1,114 @@
+from __future__ import annotations
+
+import json
+import os
+from pathlib import Path
+from typing import Any
+from urllib.error import HTTPError, URLError
+from urllib.parse import quote
+from urllib.request import Request, urlopen
+
+
+class GeminiClientError(RuntimeError):
+    pass
+
+
+class GeminiGenerateClient:
+    """Small Gemini generateContent client backed by environment variables."""
+
+    def __init__(
+        self,
+        api_key: str | None = None,
+        model: str | None = None,
+        env_path: str | Path | None = None,
+        timeout_seconds: int = 45,
+    ) -> None:
+        env_values = load_env_file(env_path)
+        self.api_key = api_key or os.getenv("GEMINI_API_KEY") or env_values.get("GEMINI_API_KEY", "")
+        self.model = model or os.getenv("GEMINI_MODEL") or env_values.get("GEMINI_MODEL", "gemini-2.5-flash")
+        self.timeout_seconds = timeout_seconds
+
+        if not self.api_key.strip():
+            raise GeminiClientError("GEMINI_API_KEY is missing. Add it to .env or the process environment.")
+
+    def __call__(self, prompt: str) -> str:
+        return self.generate(prompt, max_output_tokens=2048)
+
+    def generate(
+        self,
+        prompt: str,
+        *,
+        response_mime_type: str = "application/json",
+        temperature: float = 0.0,
+        max_output_tokens: int = 1024,
+    ) -> str:
+        if not prompt.strip():
+            raise ValueError("prompt must not be empty")
+
+        model_name = quote(self.model, safe="")
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:generateContent?key={self.api_key}"
+        body = {
+            "contents": [{"parts": [{"text": prompt}]}],
+            "generationConfig": {
+                "temperature": temperature,
+                "maxOutputTokens": max_output_tokens,
+                "responseMimeType": response_mime_type,
+            },
+        }
+        request = Request(
+            url,
+            data=json.dumps(body).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+
+        try:
+            with urlopen(request, timeout=self.timeout_seconds) as response:
+                payload = json.loads(response.read().decode("utf-8"))
+        except HTTPError as exc:
+            details = exc.read().decode("utf-8", errors="replace")
+            raise GeminiClientError(f"Gemini request failed with HTTP {exc.code}: {details}") from exc
+        except URLError as exc:
+            raise GeminiClientError(f"Gemini request failed: {exc.reason}") from exc
+        except json.JSONDecodeError as exc:
+            raise GeminiClientError("Gemini response was not valid JSON") from exc
+
+        return _extract_text(payload)
+
+
+def load_env_file(env_path: str | Path | None = None) -> dict[str, str]:
+    path = Path(env_path) if env_path is not None else _default_env_path()
+    if not path.exists():
+        return {}
+
+    values: dict[str, str] = {}
+    for line in path.read_text(encoding="utf-8").splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#") or "=" not in stripped:
+            continue
+        name, value = stripped.split("=", 1)
+        values[name.strip()] = _unquote_env_value(value.strip())
+    return values
+
+
+def _default_env_path() -> Path:
+    return Path(__file__).resolve().parents[2] / ".env"
+
+
+def _unquote_env_value(value: str) -> str:
+    if len(value) >= 2 and value[0] == value[-1] and value[0] in {'"', "'"}:
+        return value[1:-1]
+    return value
+
+
+def _extract_text(payload: dict[str, Any]) -> str:
+    try:
+        parts = payload["candidates"][0]["content"]["parts"]
+    except (KeyError, IndexError, TypeError) as exc:
+        raise GeminiClientError(f"Gemini response did not contain candidate text: {payload}") from exc
+
+    text_parts = [str(part.get("text", "")) for part in parts if isinstance(part, dict)]
+    text = "".join(text_parts).strip()
+    if not text:
+        raise GeminiClientError(f"Gemini response text was empty: {payload}")
+    return text
