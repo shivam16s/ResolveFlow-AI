@@ -8,7 +8,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-from backend.agent import IntentClassifier  # noqa: E402
+from backend.agent import IntentClassifier, intent_confidence_component  # noqa: E402
 
 
 def test_local_classifier_detects_structured_multi_issue_output() -> None:
@@ -27,10 +27,29 @@ def test_local_classifier_detects_structured_multi_issue_output() -> None:
     assert result.cancellation_risk is True
     assert result.urgency == "high"
     assert 0 <= result.confidence <= 1
+    assert result.intent_confidence == result.confidence
+    assert set(result.intent_probabilities) == {
+        "billing_dispute",
+        "duplicate_charge",
+        "service_outage",
+        "router_issue",
+        "plan_change",
+        "cancellation_intent",
+        "refund_request",
+        "technician_request",
+        "general_query",
+    }
+    assert abs(sum(result.intent_probabilities.values()) - 1.0) < 0.00001
 
     output = json.loads(result.to_json())
     assert output["intents"] == result.intents
     assert output["primary_intent"] == "duplicate_charge"
+    assert output["intent_probabilities"]["duplicate_charge"] > output["intent_probabilities"]["general_query"]
+
+    component = intent_confidence_component(result)
+    assert component.value == result.intent_confidence
+    assert component.primary_intent == "duplicate_charge"
+    assert component.source == "classifier_softmax"
 
 
 def test_llm_json_parser_accepts_fenced_json() -> None:
@@ -42,6 +61,17 @@ def test_llm_json_parser_accepts_fenced_json() -> None:
   "cancellation_risk": false,
   "urgency": "medium",
   "confidence": 0.88,
+  "intent_probabilities": {
+    "billing_dispute": 0.01,
+    "duplicate_charge": 0.01,
+    "service_outage": 0.72,
+    "router_issue": 0.01,
+    "plan_change": 0.01,
+    "cancellation_intent": 0.01,
+    "refund_request": 0.01,
+    "technician_request": 0.21,
+    "general_query": 0.01
+  },
   "emotion": "calm",
   "evidence_terms": ["internet is down", "technician"]
 }
@@ -54,6 +84,8 @@ def test_llm_json_parser_accepts_fenced_json() -> None:
     assert result.primary_intent == "service_outage"
     assert result.urgency == "medium"
     assert result.confidence == 0.88
+    assert result.intent_confidence == 0.93
+    assert intent_confidence_component(result).value == 0.93
 
 
 def test_llm_json_parser_rejects_unknown_intent() -> None:

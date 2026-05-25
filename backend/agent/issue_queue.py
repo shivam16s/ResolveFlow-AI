@@ -5,22 +5,10 @@ from dataclasses import asdict, dataclass, field
 from typing import Iterable
 
 from .intent_classifier import INTENT_PRIORITY, IntentClassification
+from .slot_schema import REQUIRED_SLOTS, detect_missing_required_slots, generate_targeted_question, prioritize_slot
 
 
 IssueStatus = str
-
-
-REQUIRED_SLOTS = {
-    "billing_dispute": ["customer_id"],
-    "duplicate_charge": ["customer_id", "invoice_id"],
-    "service_outage": ["customer_id", "location"],
-    "router_issue": ["customer_id"],
-    "plan_change": ["customer_id", "requested_plan_id"],
-    "cancellation_intent": ["customer_id"],
-    "refund_request": ["customer_id", "amount", "reason"],
-    "technician_request": ["customer_id", "time_slot"],
-    "general_query": ["customer_id"],
-}
 
 
 @dataclass
@@ -31,6 +19,18 @@ class Issue:
     required_slots: list[str]
     tools_called: list[str] = field(default_factory=list)
     resolution: str | None = None
+
+    def to_dict(self) -> dict:
+        return asdict(self)
+
+
+@dataclass(frozen=True)
+class SlotProgress:
+    intent: str
+    required_slots: list[str]
+    filled_slots: dict[str, object]
+    missing_slots: list[str]
+    is_complete: bool
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -62,6 +62,26 @@ class IssueQueue:
     def to_json(self) -> str:
         return json.dumps(self.to_list(), sort_keys=True)
 
+    def slot_progress(self, slots: dict[str, object] | None = None) -> list[SlotProgress]:
+        slots = slots or {}
+        return [slot_progress_for_issue(issue, slots) for issue in self.issues]
+
+    def next_missing_slot(self, slots: dict[str, object] | None = None) -> tuple[str, str] | None:
+        slots = slots or {}
+        for issue in self.issues:
+            prioritized = prioritize_slot(issue.intent, slots)
+            if prioritized is not None:
+                return prioritized.intent, prioritized.slot
+        return None
+
+    def targeted_question(self, slots: dict[str, object] | None = None) -> dict | None:
+        slots = slots or {}
+        for issue in self.issues:
+            question = generate_targeted_question(issue.intent, slots)
+            if question is not None:
+                return question.to_dict()
+        return None
+
 
 def build_issue_queue(classification: IntentClassification | Iterable[str]) -> IssueQueue:
     intents = classification.intents if isinstance(classification, IntentClassification) else list(classification)
@@ -76,6 +96,23 @@ def build_issue_queue(classification: IntentClassification | Iterable[str]) -> I
         for index, intent in enumerate(normalized_intents)
     ]
     return IssueQueue(issues)
+
+
+def slot_progress_for_issue(issue: Issue, slots: dict[str, object] | None = None) -> SlotProgress:
+    slots = slots or {}
+    filled_slots = {
+        slot: slots[slot]
+        for slot in issue.required_slots
+        if _slot_has_value(slots.get(slot))
+    }
+    missing_slots = [missing.slot for missing in detect_missing_required_slots(issue.intent, slots)]
+    return SlotProgress(
+        intent=issue.intent,
+        required_slots=list(issue.required_slots),
+        filled_slots=filled_slots,
+        missing_slots=missing_slots,
+        is_complete=not missing_slots,
+    )
 
 
 def _normalize_queue_intents(intents: Iterable[str]) -> list[str]:
@@ -94,3 +131,11 @@ def _normalize_queue_intents(intents: Iterable[str]) -> list[str]:
         unique_intents = ["general_query"]
 
     return sorted(unique_intents, key=lambda intent: INTENT_PRIORITY[intent])
+
+
+def _slot_has_value(value: object) -> bool:
+    if value is None:
+        return False
+    if isinstance(value, str):
+        return bool(value.strip())
+    return True

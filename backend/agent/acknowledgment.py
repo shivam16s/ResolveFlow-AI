@@ -4,9 +4,9 @@ from .issue_queue import IssueQueue
 
 
 ISSUE_LABELS = {
-    "billing_dispute": "a billing issue",
+    "billing_dispute": "a billing dispute",
     "duplicate_charge": "a possible duplicate charge",
-    "service_outage": "a service problem",
+    "service_outage": "a service outage",
     "router_issue": "a router or signal issue",
     "plan_change": "a plan change request",
     "cancellation_intent": "that you are thinking about cancelling",

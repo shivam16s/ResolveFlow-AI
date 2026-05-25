@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 import json
+import math
 import re
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from typing import Callable, Iterable
 
 
@@ -42,6 +43,8 @@ class IntentClassification:
     confidence: float
     emotion: str
     evidence_terms: list[str]
+    intent_probabilities: dict[str, float] = field(default_factory=dict)
+    intent_confidence: float = 0.0
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -131,6 +134,10 @@ class IntentClassifier:
 
         confidence = float(payload.get("confidence", 0.7))
         confidence = max(0.0, min(1.0, confidence))
+        intent_probabilities = _clean_probability_payload(payload.get("intent_probabilities"))
+        if not intent_probabilities:
+            intent_probabilities = _probabilities_from_confidence(primary_intent, confidence)
+        intent_confidence = _intent_confidence_from_probabilities(intents, intent_probabilities)
 
         emotion = str(payload.get("emotion", "neutral")).strip().lower() or "neutral"
         evidence_terms = [str(term).strip() for term in payload.get("evidence_terms", []) if str(term).strip()]
@@ -143,6 +150,8 @@ class IntentClassifier:
             confidence=round(confidence, 2),
             emotion=emotion,
             evidence_terms=evidence_terms,
+            intent_probabilities=intent_probabilities,
+            intent_confidence=intent_confidence,
         )
 
     def _classification_from_rules(self, message: str) -> IntentClassification:
@@ -187,6 +196,10 @@ class IntentClassifier:
                 "faster",
                 "cheapest",
                 "speed",
+                "activate",
+                "activation",
+                "gbps",
+                "1 gbps",
                 "bundle",
                 "add-on",
                 "add-ons",
@@ -210,7 +223,10 @@ class IntentClassifier:
         urgency = _infer_urgency(text, intents)
         emotion = _infer_emotion(text)
         evidence_terms = _dedupe(term for terms in matches.values() for term in terms)
-        confidence = min(0.95, 0.55 + (0.08 * len(intents)) + (0.02 * len(evidence_terms)))
+        intent_logits = _rule_intent_logits(matches)
+        intent_probabilities = _softmax(intent_logits)
+        intent_confidence = _intent_confidence_from_probabilities(intents, intent_probabilities)
+        confidence = intent_confidence
 
         return IntentClassification(
             intents=intents,
@@ -220,6 +236,8 @@ class IntentClassifier:
             confidence=round(confidence, 2),
             emotion=emotion,
             evidence_terms=evidence_terms[:8],
+            intent_probabilities=intent_probabilities,
+            intent_confidence=intent_confidence,
         )
 
 
@@ -235,6 +253,62 @@ def _dedupe(values: Iterable[str]) -> list[str]:
             seen.add(value)
             result.append(value)
     return result
+
+
+def _rule_intent_logits(matches: dict[str, list[str]]) -> dict[str, float]:
+    logits = {intent: -1.5 for intent in ALLOWED_INTENTS}
+    for intent, terms in matches.items():
+        if intent == "general_query":
+            logits[intent] = 1.5
+            continue
+        priority_boost = max(0.0, (10 - INTENT_PRIORITY[intent]) * 0.03)
+        logits[intent] = 1.0 + (0.45 * len(terms)) + priority_boost
+    return logits
+
+
+def _softmax(logits: dict[str, float]) -> dict[str, float]:
+    if set(logits) != set(ALLOWED_INTENTS):
+        raise ValueError("softmax logits must cover all allowed intents")
+    max_logit = max(logits.values())
+    exponentials = {intent: math.exp(value - max_logit) for intent, value in logits.items()}
+    denominator = sum(exponentials.values())
+    return {
+        intent: round(exponentials[intent] / denominator, 6)
+        for intent in ALLOWED_INTENTS
+    }
+
+
+def _intent_confidence_from_probabilities(intents: list[str], probabilities: dict[str, float]) -> float:
+    confidence = sum(probabilities.get(intent, 0.0) for intent in intents)
+    return round(max(0.0, min(1.0, confidence)), 2)
+
+
+def _clean_probability_payload(raw_probabilities: object) -> dict[str, float]:
+    if not isinstance(raw_probabilities, dict):
+        return {}
+    probabilities = {}
+    for intent in ALLOWED_INTENTS:
+        try:
+            value = float(raw_probabilities.get(intent, 0.0))
+        except (TypeError, ValueError):
+            value = 0.0
+        probabilities[intent] = max(0.0, value)
+    total = sum(probabilities.values())
+    if total <= 0:
+        return {}
+    return {
+        intent: round(probabilities[intent] / total, 6)
+        for intent in ALLOWED_INTENTS
+    }
+
+
+def _probabilities_from_confidence(primary_intent: str, confidence: float) -> dict[str, float]:
+    remaining_intents = [intent for intent in ALLOWED_INTENTS if intent != primary_intent]
+    remainder = max(0.0, 1.0 - confidence)
+    per_other = remainder / len(remaining_intents)
+    probabilities = {intent: round(per_other, 6) for intent in ALLOWED_INTENTS}
+    probabilities[primary_intent] = round(confidence, 6)
+    return probabilities
 
 
 def _infer_urgency(text: str, intents: list[str]) -> str:

@@ -19,7 +19,7 @@ def test_acknowledgment_covers_demo_issues_in_queue_order() -> None:
     response = generate_acknowledgment(queue)
 
     assert response == (
-        "I can see three concerns: a possible duplicate charge, a service problem, "
+        "I can see three concerns: a possible duplicate charge, a service outage, "
         "and that you are thinking about cancelling. Let me address each one step by step."
     )
 
@@ -29,7 +29,7 @@ def test_acknowledgment_covers_two_distinct_issues() -> None:
     response = generate_acknowledgment(queue)
 
     assert "two concerns" in response
-    assert "a service problem and a technician visit request" in response
+    assert "a service outage and a technician visit request" in response
 
 
 def test_acknowledgment_covers_single_issue() -> None:

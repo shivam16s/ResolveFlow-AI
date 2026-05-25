@@ -1,0 +1,569 @@
+[
+  {
+    "scenario_id": "case_01_simple_bill_question",
+    "title": "Simple bill question",
+    "customer_id": "CUST-1003",
+    "customer_messages": [
+      "Can you explain my latest broadband bill?"
+    ],
+    "initial_state": {
+      "db_reset_required": true,
+      "scenario_date": "2026-05-24",
+      "customer": {
+        "customer_id": "CUST-1003",
+        "account_status": "active",
+        "plan_id": "fiber_work_500",
+        "risk_level": "low"
+      },
+      "seed_evidence": {
+        "invoices": ["INV-1003"],
+        "payments": ["PAY-1003"],
+        "outages": []
+      },
+      "conversation_context": []
+    },
+    "goal_state": {
+      "expected_final_status": "resolved",
+      "expected_intents": ["general_query", "billing_dispute"],
+      "issue_queue_order": ["billing_dispute"],
+      "required_tools": ["lookup_customer", "get_invoice_history", "retrieve_policy"],
+      "forbidden_tools": ["apply_credit", "create_ticket", "schedule_technician", "generate_handoff_summary"],
+      "required_policies": ["payment_failure_policy"],
+      "expected_artifacts": {
+        "answer_references": ["INV-1003", "PAY-1003", "fiber_work_500"],
+        "audit_log_required": true,
+        "handoff_required": false
+      },
+      "success_criteria": [
+        "Explains invoice INV-1003 using account data.",
+        "Does not mention refunds, credits, outages, or cancellation.",
+        "Does not ask for information already available in the database."
+      ]
+    }
+  },
+  {
+    "scenario_id": "case_02_duplicate_charge",
+    "title": "Duplicate charge",
+    "customer_id": "CUST-1001",
+    "customer_messages": [
+      "I was charged twice this month. Please fix it."
+    ],
+    "initial_state": {
+      "db_reset_required": true,
+      "scenario_date": "2026-05-24",
+      "customer": {
+        "customer_id": "CUST-1001",
+        "account_status": "active",
+        "plan_id": "fiber_plus_200",
+        "risk_level": "high"
+      },
+      "seed_evidence": {
+        "invoices": ["INV-8821"],
+        "payments": ["PAY-1001-A", "PAY-1001-B"],
+        "outages": []
+      },
+      "conversation_context": []
+    },
+    "goal_state": {
+      "expected_final_status": "escalated",
+      "expected_intents": ["billing_dispute", "duplicate_charge"],
+      "issue_queue_order": ["duplicate_charge"],
+      "required_tools": ["lookup_customer", "get_invoice_history", "check_duplicate_charge", "retrieve_policy", "create_ticket"],
+      "forbidden_tools": ["apply_credit", "schedule_technician", "change_plan"],
+      "required_policies": ["duplicate_charge_policy", "refund_policy"],
+      "expected_artifacts": {
+        "ticket_required": true,
+        "handoff_required": true,
+        "audit_evidence_contains": ["INV-8821", "PAY-1001-A", "PAY-1001-B"],
+        "policy_dag": "duplicate_charge_refund_dag"
+      },
+      "success_criteria": [
+        "Finds invoice INV-8821.",
+        "Finds duplicate payments PAY-1001-A and PAY-1001-B.",
+        "Creates a billing review path instead of inventing a cash refund.",
+        "Audit evidence includes invoice ID and both payment IDs."
+      ]
+    }
+  },
+  {
+    "scenario_id": "case_03_outage_credit",
+    "title": "Verified outage credit",
+    "customer_id": "CUST-1001",
+    "customer_messages": [
+      "My internet was down yesterday for hours. Am I eligible for a credit?"
+    ],
+    "initial_state": {
+      "db_reset_required": true,
+      "scenario_date": "2026-05-24",
+      "customer": {
+        "customer_id": "CUST-1001",
+        "account_status": "active",
+        "plan_id": "fiber_plus_200",
+        "risk_level": "high"
+      },
+      "seed_evidence": {
+        "invoices": ["INV-8821"],
+        "payments": [],
+        "outages": ["OUT-CHN-04-20260520"]
+      },
+      "conversation_context": []
+    },
+    "goal_state": {
+      "expected_final_status": "resolved",
+      "expected_intents": ["service_outage", "refund_request"],
+      "issue_queue_order": ["service_outage", "refund_request"],
+      "required_tools": ["lookup_customer", "check_outage_status", "retrieve_policy", "apply_credit"],
+      "forbidden_tools": ["check_duplicate_charge", "schedule_technician", "change_plan"],
+      "required_policies": ["service_credit_policy"],
+      "expected_artifacts": {
+        "credit_required": true,
+        "maximum_credit_inr": 500,
+        "audit_evidence_contains": ["OUT-CHN-04-20260520", "7.0"],
+        "policy_dag": "service_credit_dag",
+        "handoff_required": false
+      },
+      "success_criteria": [
+        "Uses OUT-CHN-04-20260520 as verified outage evidence.",
+        "Applies only policy-allowed account credit.",
+        "Does not promise a cash refund."
+      ]
+    }
+  },
+  {
+    "scenario_id": "case_04_cancellation_intent",
+    "title": "Cancellation intent with unresolved outage",
+    "customer_id": "CUST-1005",
+    "customer_messages": [
+      "Cancel my connection. I am tired of outages."
+    ],
+    "initial_state": {
+      "db_reset_required": true,
+      "scenario_date": "2026-05-24",
+      "customer": {
+        "customer_id": "CUST-1005",
+        "account_status": "pending_cancellation",
+        "plan_id": "mobile_broadband_bundle",
+        "risk_level": "high"
+      },
+      "seed_evidence": {
+        "invoices": ["INV-1005"],
+        "payments": ["PAY-1005"],
+        "outages": ["OUT-HYD-N02-20260514"]
+      },
+      "conversation_context": []
+    },
+    "goal_state": {
+      "expected_final_status": "escalated",
+      "expected_intents": ["cancellation_intent", "service_outage"],
+      "issue_queue_order": ["service_outage", "cancellation_intent"],
+      "required_tools": ["lookup_customer", "check_outage_status", "retrieve_policy", "create_ticket", "generate_handoff_summary"],
+      "forbidden_tools": ["change_plan", "schedule_technician"],
+      "required_policies": ["cancellation_policy", "service_credit_policy", "escalation_policy"],
+      "expected_artifacts": {
+        "retention_handoff_required": true,
+        "auto_cancellation_forbidden": true,
+        "audit_evidence_contains": ["pending_cancellation", "OUT-HYD-N02-20260514"],
+        "policy_dag": "cancellation_retention_dag"
+      },
+      "success_criteria": [
+        "Detects pending cancellation status.",
+        "Checks outage OUT-HYD-N02-20260514.",
+        "Does not complete cancellation automatically.",
+        "Prepares warm handoff when cancellation remains explicit."
+      ]
+    }
+  },
+  {
+    "scenario_id": "case_05_policy_exception",
+    "title": "Policy exception refund request",
+    "customer_id": "CUST-1019",
+    "customer_messages": [
+      "Refund me INR 2000 right now for the downtime."
+    ],
+    "initial_state": {
+      "db_reset_required": true,
+      "scenario_date": "2026-05-24",
+      "customer": {
+        "customer_id": "CUST-1019",
+        "account_status": "active",
+        "plan_id": "fiber_work_500",
+        "risk_level": "critical"
+      },
+      "seed_evidence": {
+        "invoices": ["INV-1019"],
+        "payments": ["PAY-1019"],
+        "outages": []
+      },
+      "conversation_context": []
+    },
+    "goal_state": {
+      "expected_final_status": "escalated",
+      "expected_intents": ["refund_request", "service_outage"],
+      "issue_queue_order": ["refund_request", "service_outage"],
+      "required_tools": ["lookup_customer", "check_outage_status", "retrieve_policy", "generate_handoff_summary"],
+      "forbidden_tools": ["apply_credit", "schedule_technician", "change_plan"],
+      "required_policies": ["refund_policy", "service_credit_policy", "escalation_policy"],
+      "expected_artifacts": {
+        "refund_amount_inr": 2000,
+        "handoff_required": true,
+        "policy_exception_trigger": "refund_amount_over_500",
+        "policy_dag": "refund_exception_dag"
+      },
+      "success_criteria": [
+        "Recognizes refund amount exceeds automatic limit.",
+        "Checks outage evidence before responding.",
+        "Escalates with a context card instead of promising refund."
+      ]
+    }
+  },
+  {
+    "scenario_id": "case_06_angry_customer",
+    "title": "Angry customer with multiple possible issues",
+    "customer_id": "CUST-1008",
+    "customer_messages": [
+      "This is ridiculous. Nothing works and you people keep charging me."
+    ],
+    "initial_state": {
+      "db_reset_required": true,
+      "scenario_date": "2026-05-24",
+      "customer": {
+        "customer_id": "CUST-1008",
+        "account_status": "active",
+        "plan_id": "fiber_work_500",
+        "risk_level": "critical"
+      },
+      "seed_evidence": {
+        "invoices": ["INV-1008"],
+        "payments": ["PAY-1008"],
+        "outages": ["OUT-NOI-62-20260519"]
+      },
+      "conversation_context": []
+    },
+    "goal_state": {
+      "expected_final_status": "ask",
+      "expected_intents": ["billing_dispute", "service_outage"],
+      "issue_queue_order": ["service_outage", "billing_dispute"],
+      "required_tools": ["lookup_customer", "get_invoice_history", "retrieve_policy"],
+      "forbidden_tools": ["apply_credit", "create_ticket", "schedule_technician", "change_plan"],
+      "required_policies": ["escalation_policy"],
+      "expected_artifacts": {
+        "sentiment": "angry",
+        "targeted_question_required": true,
+        "one_slot_only": true
+      },
+      "success_criteria": [
+        "Detects anger and multiple possible issues.",
+        "Asks one targeted clarification instead of a vague question.",
+        "Does not apply credit or refund before evidence is checked."
+      ]
+    }
+  },
+  {
+    "scenario_id": "case_07_vague_customer",
+    "title": "Vague service complaint",
+    "customer_id": "CUST-1004",
+    "customer_messages": [
+      "It is bad again. Please do something."
+    ],
+    "initial_state": {
+      "db_reset_required": true,
+      "scenario_date": "2026-05-24",
+      "customer": {
+        "customer_id": "CUST-1004",
+        "account_status": "active",
+        "plan_id": "fiber_starter_100",
+        "risk_level": "medium"
+      },
+      "seed_evidence": {
+        "invoices": ["INV-1004"],
+        "payments": ["PAY-1004"],
+        "outages": ["OUT-KOC-C03-20260509"]
+      },
+      "conversation_context": []
+    },
+    "goal_state": {
+      "expected_final_status": "ask",
+      "expected_intents": ["general_query"],
+      "issue_queue_order": ["general_query"],
+      "required_tools": ["lookup_customer"],
+      "forbidden_tools": ["apply_credit", "create_ticket", "schedule_technician", "change_plan"],
+      "required_policies": [],
+      "expected_artifacts": {
+        "missing_slot": "problem_description",
+        "targeted_question_required": true,
+        "one_slot_only": true
+      },
+      "success_criteria": [
+        "Identifies that the user has not named the concrete problem.",
+        "Asks for one highest-priority missing slot.",
+        "Does not guess the customer wants outage credit."
+      ]
+    }
+  },
+  {
+    "scenario_id": "case_08_wrong_refund_request",
+    "title": "Refund request outside 30-day window",
+    "customer_id": "CUST-1004",
+    "customer_messages": [
+      "I want a refund for the payment from early May. It has been more than a month."
+    ],
+    "initial_state": {
+      "db_reset_required": true,
+      "scenario_date": "2026-06-15",
+      "customer": {
+        "customer_id": "CUST-1004",
+        "account_status": "active",
+        "plan_id": "fiber_starter_100",
+        "risk_level": "medium"
+      },
+      "seed_evidence": {
+        "invoices": ["INV-1004"],
+        "payments": ["PAY-1004"],
+        "outages": []
+      },
+      "conversation_context": []
+    },
+    "goal_state": {
+      "expected_final_status": "escalated",
+      "expected_intents": ["refund_request", "billing_dispute"],
+      "issue_queue_order": ["refund_request"],
+      "required_tools": ["lookup_customer", "get_invoice_history", "retrieve_policy", "generate_handoff_summary"],
+      "forbidden_tools": ["apply_credit", "schedule_technician", "change_plan"],
+      "required_policies": ["refund_policy", "escalation_policy"],
+      "expected_artifacts": {
+        "payment_date": "2026-05-09",
+        "refund_window_days": 30,
+        "policy_exception_trigger": "payment_older_than_30_days",
+        "cash_refund_forbidden": true,
+        "policy_dag": "refund_exception_dag"
+      },
+      "success_criteria": [
+        "Computes the refund window using scenario_date 2026-06-15.",
+        "Does not issue an automatic refund for PAY-1004.",
+        "Explains the policy limit and routes to review if needed."
+      ]
+    }
+  },
+  {
+    "scenario_id": "case_09_tool_failure",
+    "title": "Tool failure injection",
+    "customer_id": "CUST-1006",
+    "customer_messages": [
+      "Is there an outage in my area? My internet just stopped."
+    ],
+    "initial_state": {
+      "db_reset_required": true,
+      "scenario_date": "2026-05-24",
+      "customer": {
+        "customer_id": "CUST-1006",
+        "account_status": "active",
+        "plan_id": "fiber_plus_200",
+        "risk_level": "low"
+      },
+      "seed_evidence": {
+        "invoices": ["INV-1006"],
+        "payments": ["PAY-1006"],
+        "outages": ["OUT-DEL-S07-20260516"]
+      },
+      "test_flags": ["simulate_check_outage_status_failure"],
+      "conversation_context": []
+    },
+    "goal_state": {
+      "expected_final_status": "escalated",
+      "expected_intents": ["service_outage"],
+      "issue_queue_order": ["service_outage"],
+      "required_tools": ["lookup_customer", "check_outage_status", "retrieve_policy", "generate_handoff_summary"],
+      "forbidden_tools": ["apply_credit", "schedule_technician", "change_plan"],
+      "required_policies": ["escalation_policy"],
+      "expected_artifacts": {
+        "tool_failure_trigger": "check_outage_status",
+        "handoff_required": true,
+        "must_abstain_from_outage_claim": true
+      },
+      "success_criteria": [
+        "Detects tool failure.",
+        "Does not invent outage status.",
+        "Creates a safe handoff or retry path with clear uncertainty."
+      ]
+    }
+  },
+  {
+    "scenario_id": "case_10_repeated_question_loop",
+    "title": "Repeated question loop",
+    "customer_id": "CUST-1009",
+    "customer_messages": [
+      "My internet is not working.",
+      "I already said my internet is not working.",
+      "Why are you asking again? It is not working."
+    ],
+    "initial_state": {
+      "db_reset_required": true,
+      "scenario_date": "2026-05-24",
+      "customer": {
+        "customer_id": "CUST-1009",
+        "account_status": "active",
+        "plan_id": "fiber_plus_200",
+        "risk_level": "medium"
+      },
+      "seed_evidence": {
+        "invoices": ["INV-1009"],
+        "payments": ["PAY-1009"],
+        "outages": ["OUT-BLR-WF-20260515"]
+      },
+      "conversation_context": [
+        {"role": "assistant", "content": "Can you tell me what is not working?"},
+        {"role": "assistant", "content": "Can you tell me what is not working?"}
+      ]
+    },
+    "goal_state": {
+      "expected_final_status": "escalated",
+      "expected_intents": ["service_outage"],
+      "issue_queue_order": ["service_outage"],
+      "required_tools": ["lookup_customer", "check_outage_status", "run_router_diagnostic", "retrieve_policy", "generate_handoff_summary"],
+      "forbidden_tools": ["apply_credit", "change_plan"],
+      "required_policies": ["escalation_policy", "technician_visit_policy"],
+      "expected_artifacts": {
+        "loop_penalty_required": true,
+        "handoff_required": true,
+        "repeated_question_threshold": 2
+      },
+      "success_criteria": [
+        "Detects repeated-question loop.",
+        "Avoids asking the same generic clarification again.",
+        "Escalates or offers a concrete diagnostic next step."
+      ]
+    }
+  },
+  {
+    "scenario_id": "case_11_impatient_user",
+    "title": "Impatient user preserves issue queue",
+    "customer_id": "CUST-1001",
+    "customer_messages": [
+      "I was charged twice and my internet went down.",
+      "Why are we still talking about this? Just fix both."
+    ],
+    "initial_state": {
+      "db_reset_required": true,
+      "scenario_date": "2026-05-24",
+      "customer": {
+        "customer_id": "CUST-1001",
+        "account_status": "active",
+        "plan_id": "fiber_plus_200",
+        "risk_level": "high"
+      },
+      "seed_evidence": {
+        "invoices": ["INV-8821"],
+        "payments": ["PAY-1001-A", "PAY-1001-B"],
+        "outages": ["OUT-CHN-04-20260520"]
+      },
+      "conversation_context": [
+        {"role": "assistant", "content": "I will handle the duplicate charge first, then the outage credit."}
+      ]
+    },
+    "goal_state": {
+      "expected_final_status": "active",
+      "expected_intents": ["duplicate_charge", "service_outage"],
+      "issue_queue_order": ["duplicate_charge", "service_outage"],
+      "required_tools": ["lookup_customer", "get_invoice_history", "check_duplicate_charge", "check_outage_status", "retrieve_policy"],
+      "forbidden_tools": ["change_plan", "schedule_technician"],
+      "required_policies": ["duplicate_charge_policy", "service_credit_policy"],
+      "expected_artifacts": {
+        "queue_preserved": true,
+        "no_restart_required": true,
+        "acknowledgment_covers_all_detected_issues": true
+      },
+      "success_criteria": [
+        "Keeps duplicate charge and outage as separate queued issues.",
+        "Does not restart the flow after the impatient second message.",
+        "Acknowledges both issues while resolving one issue at a time."
+      ]
+    }
+  },
+  {
+    "scenario_id": "case_12_tangential_user",
+    "title": "Tangential user returns to primary issue",
+    "customer_id": "CUST-1011",
+    "customer_messages": [
+      "Why am I paying for mobile add-ons? I thought this was only broadband.",
+      "Also, what is the weather like today?",
+      "Anyway, back to the bill. Why are the add-ons there?"
+    ],
+    "initial_state": {
+      "db_reset_required": true,
+      "scenario_date": "2026-05-24",
+      "customer": {
+        "customer_id": "CUST-1011",
+        "account_status": "active",
+        "plan_id": "mobile_broadband_bundle",
+        "risk_level": "medium"
+      },
+      "seed_evidence": {
+        "invoices": ["INV-1011"],
+        "payments": ["PAY-1011"],
+        "outages": []
+      },
+      "conversation_context": []
+    },
+    "goal_state": {
+      "expected_final_status": "resolved",
+      "expected_intents": ["billing_dispute", "general_query"],
+      "issue_queue_order": ["billing_dispute"],
+      "required_tools": ["lookup_customer", "get_invoice_history", "retrieve_policy"],
+      "forbidden_tools": ["apply_credit", "check_outage_status", "schedule_technician"],
+      "required_policies": ["payment_failure_policy", "plan_change_policy"],
+      "expected_artifacts": {
+        "digression_ignored_for_tools": true,
+        "primary_issue_preserved": "billing_dispute",
+        "answer_references": ["mobile_broadband_bundle", "INV-1011"]
+      },
+      "success_criteria": [
+        "Does not call unrelated external tools for the weather digression.",
+        "Returns to the mobile bundle billing explanation.",
+        "Offers plan-change path only after explaining current plan."
+      ]
+    }
+  },
+  {
+    "scenario_id": "case_13_unavailable_service_request",
+    "title": "Unavailable service request policy denial",
+    "customer_id": "CUST-1014",
+    "customer_messages": [
+      "Activate 1 Gbps service for me today and send a technician right now."
+    ],
+    "initial_state": {
+      "db_reset_required": true,
+      "scenario_date": "2026-05-24",
+      "customer": {
+        "customer_id": "CUST-1014",
+        "account_status": "suspended",
+        "plan_id": "fiber_starter_100",
+        "risk_level": "medium"
+      },
+      "seed_evidence": {
+        "invoices": ["INV-1014"],
+        "payments": ["PAY-1014"],
+        "outages": []
+      },
+      "conversation_context": []
+    },
+    "goal_state": {
+      "expected_final_status": "resolved",
+      "expected_intents": ["plan_change", "technician_request"],
+      "issue_queue_order": ["plan_change", "technician_request"],
+      "required_tools": ["lookup_customer", "get_invoice_history", "retrieve_policy"],
+      "forbidden_tools": ["change_plan", "schedule_technician", "apply_credit"],
+      "required_policies": ["plan_change_policy", "technician_visit_policy", "payment_failure_policy"],
+      "expected_artifacts": {
+        "policy_denial_required": true,
+        "account_status_blocker": "suspended",
+        "unsupported_service": "1 Gbps",
+        "no_hallucinated_availability": true
+      },
+      "success_criteria": [
+        "Denies same-day 1 Gbps activation because it is not in the plan catalog.",
+        "Detects suspended account before technician scheduling.",
+        "Does not hallucinate a technician slot or unsupported plan."
+      ]
+    }
+  }
+]

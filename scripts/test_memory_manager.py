@@ -10,7 +10,11 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 from backend.agent.memory_graph import get_memory_graph_node, list_memory_graph_nodes
-from backend.agent.memory_manager import MemoryManager
+from backend.agent.memory_manager import (
+    MemoryManager,
+    build_memory_citation_context,
+    format_memory_citation_context,
+)
 from backend.agent.memory_store import MemorySearchResult
 
 
@@ -148,8 +152,28 @@ def make_connection_with_conversation() -> sqlite3.Connection:
         """
     )
     connection.execute(
-        "INSERT INTO conversations(session_id, customer_id, messages) VALUES (?, ?, ?)",
-        ("sess-001", "CUST-1001", "[]"),
+        """
+        INSERT INTO conversations(
+          session_id, customer_id, messages, health_scores, final_status,
+          relationship_score_start, relationship_score_end, relationship_delta, completed_at
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        ("sess-prior-001", "CUST-1001", "[]", "[45, 50]", "resolved", 50, 50, 0, "2026-05-20T10:00:00+00:00"),
+    )
+    connection.execute(
+        """
+        INSERT INTO conversations(
+          session_id, customer_id, messages, health_scores, final_status,
+          relationship_score_start, relationship_score_end, relationship_delta, completed_at
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        ("sess-prior-002", "CUST-1001", "[]", "[65, 70]", "resolved", 61.76, 70, 8.24, "2026-05-21T10:00:00+00:00"),
+    )
+    connection.execute(
+        "INSERT INTO conversations(session_id, customer_id, messages, health_scores) VALUES (?, ?, ?, ?)",
+        ("sess-001", "CUST-1001", "[]", "[62, 80]"),
     )
     return connection
 
@@ -218,11 +242,17 @@ def assert_indexes_session_at_close() -> None:
         raise AssertionError("synonymy enrichment should run after graph indexing")
 
     row = connection.execute(
-        "SELECT final_status, completed_at FROM conversations WHERE session_id = ?",
+        """
+        SELECT final_status, completed_at, relationship_score_start, relationship_score_end, relationship_delta
+        FROM conversations
+        WHERE session_id = ?
+        """,
         ("sess-001",),
     ).fetchone()
     if row[0] != "resolved" or not row[1]:
         raise AssertionError(f"conversation close fields wrong: {row}")
+    if (row[2], row[3], row[4]) != (61.76, 70.09, 8.33):
+        raise AssertionError(f"relationship scores should persist on close: {row}")
 
 
 def assert_empty_session_closes_without_indexing() -> None:
@@ -246,6 +276,16 @@ def assert_empty_session_closes_without_indexing() -> None:
         raise AssertionError("vector store should not be called for empty sessions")
     if not summary.session_closed:
         raise AssertionError("empty session should still close the conversation")
+    row = connection.execute(
+        """
+        SELECT relationship_score_start, relationship_score_end, relationship_delta
+        FROM conversations
+        WHERE session_id = ?
+        """,
+        ("sess-001",),
+    ).fetchone()
+    if (row[0], row[1], row[2]) != (61.76, 70.09, 8.33):
+        raise AssertionError(f"empty session should still persist relationship scores: {row}")
 
 
 def assert_retrieve_merges_vector_and_graph_results() -> None:
@@ -315,6 +355,52 @@ def assert_retrieve_merges_vector_and_graph_results() -> None:
         raise AssertionError(f"retrieve should use fact-augmented query: {vector_store.hybrid_calls}")
 
 
+def assert_builds_memory_citation_context() -> None:
+    connection = make_connection_with_conversation()
+    vector_store = FakeVectorStore()
+    manager = MemoryManager(
+        vector_store=vector_store,
+        graph_connection=connection,
+        llm_client=FakeLLM(),
+        synonymy_embedding_function=fake_synonymy_embeddings,
+    )
+    from backend.agent.memory_graph import update_memory_graph
+
+    update_memory_graph(
+        connection,
+        customer_id="CUST-1001",
+        memory_id="mem-shared",
+        triples=[
+            {
+                "subject": "duplicate charge",
+                "relation": "involved",
+                "object": "invoice INV-8821",
+                "confidence": 0.9,
+                "evidence": "duplicate charge involved invoice INV-8821",
+            }
+        ],
+    )
+
+    contexts = manager.retrieve_citation_context(
+        customer_id="CUST-1001",
+        query="duplicate charge refund",
+        top_k=2,
+        max_chars_per_memory=80,
+    )
+    if [context.citation_id for context in contexts] != ["M1", "M2"]:
+        raise AssertionError(f"citation ids wrong: {[context.to_dict() for context in contexts]}")
+    if any(len(context.text) > 80 for context in contexts):
+        raise AssertionError(f"citation text was not truncated: {[context.to_dict() for context in contexts]}")
+
+    formatted = format_memory_citation_context(contexts)
+    if "[M1]" not in formatted or "memory_id=" not in formatted or "score=" not in formatted:
+        raise AssertionError(f"formatted citation context missing fields: {formatted}")
+
+    manual = build_memory_citation_context(manager.retrieve(customer_id="CUST-1001", query="duplicate charge", top_k=1))
+    if len(manual) != 1 or manual[0].citation_id != "M1":
+        raise AssertionError(f"manual citation context wrong: {[context.to_dict() for context in manual]}")
+
+
 def assert_rejects_bad_inputs() -> None:
     manager = MemoryManager(
         vector_store=FakeVectorStore(),
@@ -348,11 +434,19 @@ def assert_rejects_bad_inputs() -> None:
         else:
             raise AssertionError(f"bad retrieve inputs were accepted: {kwargs}")
 
+    try:
+        build_memory_citation_context([], max_items=0)
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("bad citation max_items was accepted")
+
 
 def main() -> None:
     assert_indexes_session_at_close()
     assert_empty_session_closes_without_indexing()
     assert_retrieve_merges_vector_and_graph_results()
+    assert_builds_memory_citation_context()
     assert_rejects_bad_inputs()
     print("memory manager tests passed")
 

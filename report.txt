@@ -369,3 +369,2330 @@ Verified:
 - python -B scripts\test_memory_graph.py
 - python -B scripts\test_openie_extraction.py
 - python -B scripts\test_memory_reader.py
+
+
+Feature 3 - Policy-Grounded Retrieval
+-------------------------------------
+
+1. Ingest 8 policy docs into ChromaDB (resolveflow_policies collection)
+
+Implemented and ticked the policy ingestion task.
+
+Added backend/agent/policy_store.py with:
+- ChromaPolicyStore
+- PolicyDocument metadata parsing from markdown headers.
+- ingest_policy_docs() for the 8 docs in docs/policies.
+- Deterministic Chroma IDs so ingestion is idempotent.
+- resolveflow_policies as the default collection.
+- query() helper for policy vector lookup.
+
+Added tests in scripts/test_policy_ingestion.py and exported the policy store from backend/agent/__init__.py.
+
+Verified:
+- python -B scripts\test_policy_ingestion.py
+- python -B scripts\test_memory_store.py
+- python -B scripts\test_memory_manager.py
+- Real ingestion into data/chroma collection resolveflow_policies completed with collection_count = 8.
+
+
+2. Chunk to 300-token paragraphs with 50-token overlap
+
+Implemented and ticked the policy chunking task.
+
+Updated backend/agent/policy_store.py with:
+- PolicyChunk dataclass.
+- chunk_policy_document() token-window chunker.
+- Default 300-token chunk limit.
+- Default 50-token overlap between chunks.
+- Chunk metadata stored in ChromaDB: chunk_index, chunk_count, token_count, chunk_token_limit, and chunk_overlap.
+- Deterministic chunk IDs. Existing one-chunk policies keep the same first chunk ID, so ingestion stays idempotent.
+
+Expanded scripts/test_policy_ingestion.py with:
+- Synthetic long-policy test proving 50-token-style overlap behavior.
+- Metadata checks for chunk_count and token_count.
+
+Verified:
+- python -B scripts\test_policy_ingestion.py
+- python -B scripts\test_memory_manager.py
+- python -B scripts\test_memory_store.py
+- Real resolveflow_policies ingestion refreshed with policy_count = 8 and chunk_count = 8.
+
+
+3. Self-RAG: [Retrieve] token decision logic
+
+Implemented and ticked the Self-RAG retrieve-token task.
+
+Added backend/agent/policy_retrieval.py with:
+- RetrieveDecision dataclass.
+- SelfRAGRetrieveDecider using Gemini by default.
+- build_retrieve_decision_prompt() with explicit Self-RAG [Retrieve] token instructions.
+- retrieve token validation for yes, no, and continue.
+- decide_policy_retrieval() deterministic fallback for local/no-key use.
+- Conservative rule fallback that retrieves for policy, refund, credit, cancellation, billing, outage, technician, plan, and compliance requests.
+
+Added tests in scripts/test_policy_retrieval.py and exported the decider from backend/agent/__init__.py.
+
+Verified:
+- python -B scripts\test_policy_retrieval.py
+
+
+Feature 10 - Resolution Proof Trail
+-----------------------------------
+
+5. Persisted to audit_logs table
+
+Implemented and ticked the audit_logs persistence task.
+
+The persistence path already existed in backend/tools.py through generate_audit_log(), which builds a proof-trail draft and writes it into audit_logs with an idempotent INSERT ... ON CONFLICT DO UPDATE.
+
+Hardened scripts/test_audit_log.py with:
+- End-to-end proof that a build_audit_log() draft is persisted into audit_logs.
+- Exact JSON round-trip checks for tools_called, evidence_used, action_taken, and policy_dag_path.
+- Stored UJCS, policy_status, health_score, and handoff_required checks.
+- Confirmation that the first write inserts a real audit_logs row.
+
+Verified:
+- python -B scripts\test_audit_log.py
+- python -B scripts\test_dashboard_audit_tabs.py
+- python -B scripts\test_tool_audit_logging.py
+
+
+Feature 11 - Agent Evaluation Harness
+-------------------------------------
+
+1. db.reset_to_initial_state() - restore known DB state per test case
+
+Implemented and ticked the DB reset task.
+
+Added backend/db/reset.py with:
+- reset_to_initial_state(db_path=...).
+- DatabaseResetResult dataclass.
+- Foreign-key-safe table clearing across all 13 SQLite tables.
+- Deterministic reseeding through the real billing and outage seeders.
+- Baseline table counts returned for evaluation harness assertions.
+- Idempotent behavior so every test case can start from the same state.
+
+Added backend/db/__init__.py with:
+- reset_to_initial_state export.
+- existing DB initialization and validation exports.
+
+Updated seed modules to support both package imports and direct script execution.
+
+Added scripts/test_db_reset.py covering:
+- Dirty database setup with runtime rows in conversations, tickets, diagnostics, memory_store, credits, audit_logs, and human_handoff_queue.
+- Reset removal of runtime rows.
+- Restoration of 20 customers, 20 invoices, 21 payments, 10 outages, and 5 plans.
+- Restoration of mutated customer baseline data.
+- Foundation validator pass after reset.
+- Idempotent repeated reset behavior.
+
+Verified:
+- python -B scripts\test_db_reset.py
+- python -B scripts\test_foundation_validation.py
+- python -B scripts\test_duplicate_charge.py
+
+
+2. All 13 test scenario definitions with initial_state + goal_state
+
+Implemented and ticked the 13 evaluation scenario definition task.
+
+Added docs/evaluation_scenarios.json with 13 grounded evaluation cases:
+- case_01_simple_bill_question.
+- case_02_duplicate_charge.
+- case_03_outage_credit.
+- case_04_cancellation_intent.
+- case_05_policy_exception.
+- case_06_angry_customer.
+- case_07_vague_customer.
+- case_08_wrong_refund_request.
+- case_09_tool_failure.
+- case_10_repeated_question_loop.
+- case_11_impatient_user.
+- case_12_tangential_user.
+- case_13_unavailable_service_request.
+
+Each scenario includes:
+- customer_messages.
+- initial_state with db_reset_required, scenario_date, customer baseline, seed evidence, and optional conversation/test context.
+- goal_state with expected final status, intents, issue queue order, required tools, forbidden tools, required policies, expected artifacts, and success criteria.
+
+Added backend/evaluation/scenarios.py with:
+- EvaluationScenario dataclass.
+- EvaluationScenarioValidationReport dataclass.
+- load_evaluation_scenarios().
+- validate_evaluation_scenarios().
+- Exact 13-case ID/order validation.
+- SQLite validation that every referenced customer, invoice, payment, and outage exists in the reset seed database.
+
+Added backend/evaluation/__init__.py exports.
+
+Added scripts/test_evaluation_scenarios.py covering:
+- All 13 scenarios load in the expected order.
+- Every case has initial_state and goal_state.
+- Scenario references validate against a freshly reset seed DB.
+- High-risk cases encode real goals for duplicate-charge evidence, >30-day refund denial, tool failure, repeated loops, impatience, tangents, and unavailable service denial.
+
+Verified:
+- python -B scripts\test_evaluation_scenarios.py
+- python -B scripts\test_db_reset.py
+- python -B scripts\test_foundation_validation.py
+
+
+3. run_evaluation() - pass^k runner (k=5, 13 cases)
+
+Implemented and ticked the pass^k evaluation runner task.
+
+Added backend/evaluation/runner.py with:
+- EvaluationCaseResult dataclass.
+- EvaluationRunResult dataclass.
+- run_evaluation(k=5, scenarios_path=..., db_path=None).
+- Full pass^k loop across all 13 scenario definitions.
+- DB reset before every pass/case using reset_to_initial_state().
+- Conversation shell insertion per case so handoff/context/audit tools have real session data.
+- Rule-backed intent classification and issue queue capture for every scenario.
+- Deterministic execution of supported backend tools: lookup_customer, get_invoice_history, check_duplicate_charge, check_outage_status, run_router_diagnostic, retrieve_policy, apply_credit, create_ticket, and generate_handoff_summary.
+- Scenario test flag handling for simulated check_outage_status failure.
+- Required-tool, forbidden-tool, policy retrieval, policy DAG path, and expected-artifact checks.
+- Batch summary with pass_k, scenario_count, total_runs, passed_runs, success_rate, and per-case result records.
+
+Updated backend/evaluation/__init__.py with:
+- EvaluationCaseResult export.
+- EvaluationRunResult export.
+- run_evaluation export.
+
+Added scripts/test_evaluation_runner.py covering:
+- k=5 over 13 cases produces exactly 65 result records.
+- Stable pass/case ordering from case_01 through case_13 for every pass.
+- Per-case reset artifacts are captured.
+- Duplicate-charge case calls the expected billing/retrieval/ticket tools.
+- Outage-credit case writes a compliant apply_credit artifact.
+- Tool-failure case records the simulated outage-tool failure instead of inventing status.
+- Invalid k validation.
+
+Verified:
+- python -B scripts\test_evaluation_runner.py
+- python -B scripts\test_evaluation_scenarios.py
+- python -B scripts\test_db_reset.py
+
+
+4. 9-metric report generation including non_collaborative_degradation
+
+Implemented and ticked the 9-metric report generation task.
+
+Added backend/evaluation/reporting.py with:
+- EvaluationMetric dataclass.
+- EvaluationMetricReport dataclass.
+- generate_metric_report(evaluation_result=None, k=5, scenarios_path=..., db_path=None).
+- JSON-ready metric report generation from real run_evaluation() output.
+- Exact nine metric names:
+  - resolution_success.
+  - policy_compliance.
+  - correct_tools_called.
+  - wrong_tools_avoided.
+  - hallucination_count.
+  - escalation_correctness.
+  - average_turns.
+  - audit_trail_coverage.
+  - non_collaborative_degradation.
+- Per-scenario summary with run count, passed runs, average score, expected final status, non-collaborative marker, and failure count.
+- Non-collaborative scenario set covering angry, vague, repeated-question, impatient, and tangential users.
+- Lower-is-better metadata for hallucination_count, average_turns, and non_collaborative_degradation.
+- Validation for malformed evaluation result payloads.
+
+Updated backend/evaluation/__init__.py with:
+- EvaluationMetric export.
+- EvaluationMetricReport export.
+- generate_metric_report export.
+
+Added scripts/test_evaluation_report.py covering:
+- Real run_evaluation(k=1) output becomes a 9-metric report.
+- Exact metric names and order.
+- Numeric metric values.
+- non_collaborative_degradation presence, direction, and scenario membership.
+- Bad payload validation.
+
+Verified:
+- python -B scripts\test_evaluation_report.py
+- python -B scripts\test_evaluation_runner.py
+- python -B scripts\test_evaluation_scenarios.py
+
+
+5. RAGAS evaluation layer - faithfulness + context precision on all policy retrievals
+
+Implemented and ticked the RAGAS evaluation layer task.
+
+ragas is not installed in the local environment, so the project now includes a dependency-light RAGAS-compatible scorer that computes the two required retrieval metrics over real ResolveFlow policy retrieval artifacts.
+
+Updated backend/evaluation/runner.py with:
+- Full policy retrieval payload preservation in artifacts.policy_retrievals.
+- Evidence strips retained for every retrieve_policy() call so RAGAS scoring can inspect contexts, not just policy IDs.
+
+Added backend/evaluation/ragas.py with:
+- RAGASPolicyRetrievalScore dataclass.
+- RAGASEvaluationReport dataclass.
+- evaluate_policy_retrievals_with_ragas(evaluation_result=None, k=5, scenarios_path=..., db_path=None).
+- Faithfulness scoring based on expected scenario terms supported by retrieved policy contexts.
+- Context precision scoring using ranked evidence strips and query/expected-answer overlap.
+- Per-retrieval scores for scenario_id, pass_index, policy_id, query, faithfulness, context_precision, context_count, supported_terms, missing_terms, and relevant_context_ranks.
+- Aggregate average_faithfulness and average_context_precision across all policy retrievals.
+- Input validation for malformed evaluation result payloads.
+
+Updated backend/evaluation/__init__.py with:
+- RAGASPolicyRetrievalScore export.
+- RAGASEvaluationReport export.
+- evaluate_policy_retrievals_with_ragas export.
+
+Added scripts/test_ragas_evaluation.py covering:
+- Real run_evaluation(k=1) policy retrievals are all scored.
+- Faithfulness and context_precision ranges.
+- Duplicate-charge policy retrieval has grounded duplicate-charge support terms.
+- Bad payload validation.
+
+Verified:
+- python -B scripts\test_ragas_evaluation.py
+- python -B scripts\test_evaluation_runner.py
+- python -B scripts\test_evaluation_report.py
+
+
+6. Three-layer evaluation methodology - deterministic + RAGAS + human review
+
+Implemented and ticked the three-layer evaluation methodology task.
+
+Added backend/evaluation/methodology.py with:
+- HUMAN_REVIEW_RUBRIC.
+- HumanReviewPacket dataclass.
+- ThreeLayerEvaluationMethodology dataclass.
+- build_three_layer_evaluation(evaluation_result=None, k=5, scenarios_path=..., db_path=None).
+- build_human_review_packets(evaluation_result, scenarios=None).
+- Deterministic layer composed from generate_metric_report().
+- RAGAS layer composed from evaluate_policy_retrievals_with_ragas().
+- Human-review layer with stable packets for every evaluated run.
+- Human review rubric covering resolution_quality, policy_safety, evidence_use, customer_experience, and handoff_quality.
+- Rating contract with 1-5 scores, rationale, and approve/needs_fix/unsafe decisions.
+
+Updated backend/evaluation/__init__.py with:
+- HUMAN_REVIEW_RUBRIC export.
+- HumanReviewPacket export.
+- ThreeLayerEvaluationMethodology export.
+- build_human_review_packets export.
+- build_three_layer_evaluation export.
+
+Added scripts/test_three_layer_evaluation.py covering:
+- Three ordered methodology layers: deterministic, ragas, human_review.
+- Deterministic layer exposes the existing 9-metric report.
+- RAGAS layer contains real policy retrieval scores.
+- Human-review layer creates one packet per evaluated run.
+- Review packets preserve expected goal state plus observed tools, policies, score, and failures.
+- Bad payload validation.
+
+Verified:
+- python -B scripts\test_three_layer_evaluation.py
+- python -B scripts\test_ragas_evaluation.py
+- python -B scripts\test_evaluation_report.py
+
+
+7. Benchmark comparison output vs. tau-bench SOTA baselines with RAGAS rows
+
+Implemented and ticked the benchmark comparison task.
+
+Added backend/evaluation/benchmark.py with:
+- TauBenchBaseline dataclass.
+- BenchmarkComparisonRow dataclass.
+- BenchmarkComparisonReport dataclass.
+- DEFAULT_TAU_BENCH_BASELINES with dated, source-linked tau-bench defaults:
+  - TAU-bench retail SOTA snapshot: Claude Sonnet 4.5, pass^1 score 0.862.
+  - TAU-bench airline SOTA snapshot: Claude Sonnet 4.5, pass^1 score 0.700.
+  - Original tau-bench paper GPT-4o function-calling upper-bound row, encoded as 0.500 from the reported <50% result.
+- generate_benchmark_comparison(evaluation_result=None, metric_report=None, ragas_report=None, baselines=None, k=5, scenarios_path=..., db_path=None).
+- ResolveFlow resolution_success comparison rows with delta and ratio against each tau-bench baseline.
+- Internal ResolveFlow rows for policy_compliance and wrong_tools_avoided.
+- Required RAGAS rows for average_faithfulness and average_context_precision.
+- Baseline override validation so future SOTA snapshots can replace the defaults without changing report logic.
+
+Updated backend/evaluation/__init__.py with:
+- TauBenchBaseline export.
+- BenchmarkComparisonRow export.
+- BenchmarkComparisonReport export.
+- DEFAULT_TAU_BENCH_BASELINES export.
+- generate_benchmark_comparison export.
+
+Added scripts/test_benchmark_comparison.py covering:
+- Real run_evaluation(k=1) output becomes a tau-bench comparison report.
+- Default retail and airline SOTA baseline rows are present.
+- Delta and ratio are computed for tau-bench comparison rows.
+- Source URLs and retrieved_date are present for all default baselines.
+- RAGAS rows are included and do not fake tau-bench baseline scores.
+- Bad baseline override validation.
+
+Verified:
+- python -B scripts\test_benchmark_comparison.py
+- python -B scripts\test_three_layer_evaluation.py
+- python -B scripts\test_ragas_evaluation.py
+- python -B scripts\test_foundation_validation.py
+- python -B scripts\test_audit_log.py
+
+
+Feature 7 - Conversation Health Scoring
+---------------------------------------
+
+7. get_recommended_action() - threshold routing (>=70/50-70/30-50/<30)
+
+Implemented and ticked the get_recommended_action() task.
+
+Updated backend/agent/health.py with:
+- RecommendedAction dataclass.
+- get_recommended_action().
+- Threshold routing for >=70, 50-70, 30-50, and <30.
+- Explicit action outputs: CONTINUE, CAUTION, REPAIR, and HANDOFF.
+- Support for either a HealthScore object or a raw numeric score.
+- Score validation for the 0-100 health range.
+
+Updated backend/agent/__init__.py with:
+- RecommendedAction export.
+- get_recommended_action export.
+
+Expanded scripts/test_health_score.py with:
+- Boundary routing tests for 70, 50, 30, and below-threshold values.
+- HealthScore-object input coverage.
+- Invalid score validation checks.
+
+Verified:
+- python -B scripts\test_health_score.py
+- python -B scripts\test_intent_classifier.py
+- python -B scripts\test_policy_retrieval.py
+
+
+8. compute_relationship_score() - exponential decay over past 5 sessions
+
+Implemented and ticked the compute_relationship_score() task.
+
+Updated backend/agent/health.py with:
+- RelationshipScore dataclass.
+- compute_relationship_score().
+- Exponential decay over the latest 5 past sessions.
+- Default decay factor of 0.7, giving newest sessions the highest weight.
+- Neutral default score support when no session history exists.
+- Input support for raw numeric scores, HealthScore objects, and session dictionaries.
+- Validation for score range, decay factor, max session count, and malformed session records.
+
+Updated backend/agent/__init__.py with:
+- RelationshipScore export.
+- compute_relationship_score export.
+
+Expanded scripts/test_health_score.py with:
+- Past-5-session decay math check.
+- Custom decay-factor check.
+- HealthScore and session-dictionary extraction checks.
+- Empty-history default check.
+- Invalid input validation checks.
+
+Verified:
+- python -B scripts\test_health_score.py
+- python -B scripts\test_intent_classifier.py
+- python -B scripts\test_handoff_summary.py
+
+
+11. Persist relationship_score_start, relationship_score_end, relationship_delta to conversations table
+
+Implemented and ticked the relationship-score persistence task.
+
+Updated backend/agent/memory_manager.py with:
+- Session-start relationship score persistence before indexing.
+- Session-close relationship_score_end and relationship_delta persistence.
+- relationship_score_start computed from prior completed sessions for the same customer.
+- relationship_score_end computed from prior completed sessions plus the current session's latest health score.
+- relationship_delta computed as end minus start.
+- Fallback behavior for older conversation tables that do not have relationship-score columns.
+- JSON parsing for health_scores lists containing raw scores or score dictionaries.
+
+Expanded scripts/test_memory_manager.py with:
+- Prior completed conversation rows.
+- Current session health_scores.
+- Assertion that close persists relationship_score_start, relationship_score_end, and relationship_delta.
+- Empty-session close coverage proving relationship scores still persist when no memory units are indexed.
+
+Verified:
+- python -B scripts\test_memory_manager.py
+- python -B scripts\test_health_score.py
+- python -B scripts\test_handoff_summary.py
+
+
+Feature 8 - Warm Human Handoff
+------------------------------
+
+1. Trigger condition detection (8 triggers)
+
+Implemented and ticked the trigger condition detection task.
+
+Added backend/agent/handoff.py with:
+- HandoffTrigger dataclass.
+- HandoffTriggerDetection dataclass.
+- detect_handoff_triggers().
+- Detection for all 8 handoff triggers:
+  - policy exception.
+  - health score below 30.
+  - anger.
+  - repeated-question loop.
+  - churn risk.
+  - tool failure.
+  - refund amount over INR 500.
+  - explicit human/escalation request.
+- Stable trigger ordering for deterministic downstream queue insertion.
+- Severity ranking with highest_severity.
+- Runtime artifact support for policy result dicts/objects, HealthScore-like payloads, sentiment/loop components, message history, tool call logs, refund amount strings, churn score, and explicit request flags.
+
+Updated backend/agent/__init__.py with:
+- HandoffTrigger export.
+- HandoffTriggerDetection export.
+- detect_handoff_triggers export.
+
+Added scripts/test_handoff_triggers.py covering:
+- All 8 triggers firing together.
+- Raw runtime artifact extraction.
+- No-trigger behavior below thresholds.
+- Validation for bad health, sentiment, churn, refund, and tool-call inputs.
+
+Verified:
+- python -B scripts\test_handoff_triggers.py
+- python -B scripts\test_health_score.py
+- python -B scripts\test_clarification.py
+
+
+2. Insert into human_handoff_queue table
+
+Implemented and ticked the human_handoff_queue insertion task.
+
+Updated backend/agent/handoff.py with:
+- HandoffQueueEntry dataclass.
+- insert_human_handoff_queue().
+- SQLite insertion into human_handoff_queue.
+- Context-card JSON serialization.
+- Customer and audit-case reference validation before insertion.
+- Case/customer mismatch protection.
+- Idempotent behavior per case_id so repeated handoff attempts return the existing queue row instead of duplicating it.
+- Default queue status of waiting with no assigned specialist.
+
+Updated backend/agent/__init__.py with:
+- HandoffQueueEntry export.
+- insert_human_handoff_queue export.
+
+Added scripts/test_handoff_queue.py covering:
+- Real SQLite insert into human_handoff_queue.
+- Context-card round trip from dict to stored JSON and back.
+- Generated HND-* handoff IDs.
+- Idempotent insert behavior for repeated case_id.
+- Validation for missing case/customer/reason, non-dict context cards, unknown audit cases, and bad customer references.
+
+Verified:
+- python -B scripts\test_handoff_queue.py
+- python -B scripts\test_handoff_triggers.py
+- python -B scripts\test_handoff_summary.py
+
+
+3. Customer-facing message ("connecting you to a specialist...")
+
+Implemented and ticked the customer-facing handoff message task.
+
+Updated backend/agent/handoff.py with:
+- HandoffCustomerMessage dataclass.
+- generate_handoff_customer_message().
+- Consistent customer-facing text: "I am connecting you to a specialist..."
+- Context assurance so the customer knows they do not need to repeat details.
+- Optional customer name, issue summary, estimated wait, queue metadata, and trigger-code support.
+- Context-card fallback for customer name and remaining issue summary.
+- Trigger-code extraction and dedupe from HandoffTriggerDetection or dict payloads.
+
+Updated backend/agent/__init__.py with:
+- HandoffCustomerMessage export.
+- generate_handoff_customer_message export.
+
+Added scripts/test_handoff_customer_message.py covering:
+- Base specialist connection message.
+- Queue-entry context and trigger detection enrichment.
+- Context assurance wording.
+- Dict inputs and blank-context fallback behavior.
+
+Verified:
+- python -B scripts\test_handoff_customer_message.py
+- python -B scripts\test_handoff_queue.py
+- python -B scripts\test_handoff_triggers.py
+
+
+4. Handoff event logged to audit trail
+
+Implemented and ticked the handoff audit-trail task.
+
+Updated backend/agent/handoff.py with:
+- HandoffAuditEvent dataclass.
+- log_handoff_event_to_audit().
+- Preservation of existing audit log tools, evidence, actions, DAG path, policy status, UJCS, and health score when logging handoff events.
+- Structured human_handoff tool event appended to audit_logs.tools_called.
+- Structured handoff_event evidence appended to audit_logs.evidence_used.
+- Structured human_handoff action appended to audit_logs.action_taken with handoff ID, queue status, reason, trigger codes, and customer-facing message.
+- handoff_required=True persisted through the existing generate_audit_log() upsert.
+- Automatic customer-facing message generation when the caller does not pass one.
+
+Updated backend/agent/__init__.py with:
+- HandoffAuditEvent export.
+- log_handoff_event_to_audit export.
+
+Added scripts/test_handoff_audit_event.py covering:
+- Real SQLite persistence into audit_logs.
+- Existing audit fields preserved while handoff metadata is appended.
+- Handoff tool/action/evidence payloads stored with queue metadata.
+- handoff_required flag updated to true.
+- Generated customer-facing message persisted when omitted by caller.
+- Validation for missing IDs, missing sessions, incomplete queue entries, and non-list audit payloads.
+
+Verified:
+- python -B scripts\test_handoff_audit_event.py
+- python -B scripts\test_handoff_queue.py
+- python -B scripts\test_audit_log.py
+
+
+Feature 9 - Customer Context Card
+---------------------------------
+
+1. generate_context_card() - full card dict builder
+
+Implemented and ticked the generate_context_card() task.
+
+Updated backend/tools.py with:
+- ContextCardResult dataclass.
+- generate_context_card(conversation_id, handoff_reason=None, db_path=...).
+- Full JSON-ready context card with session_id, customer_id, generated_at, case_id, source, and context_card_id.
+- Customer profile and plan details.
+- Issues detected, resolved, and remaining.
+- Latest health score, emotion, urgency, and relationship score start/end/delta.
+- Slots collected from the conversation.
+- Tool calls merged from conversations and audit_logs.
+- Retrieved policy IDs, policy DAG path, evidence used, and actions taken.
+- Audit summary block with policy status, UJCS, health score, and handoff flag.
+- Handoff queue block with handoff_id, reason, status, assigned specialist, and created_at when present.
+- Recent memory context from memory_store.
+- Last customer message and recommended human-agent opening.
+
+Updated generate_handoff_summary() to reuse generate_context_card() instead of rebuilding the card separately.
+
+Updated backend/api/routes.py with:
+- POST /api/tools/generate_context_card.
+- Tool-call audit logging for generate_context_card.
+
+Updated backend/__init__.py with:
+- ContextCardResult export.
+- generate_context_card export.
+
+Added scripts/test_context_card.py covering:
+- Real SQLite context-card construction from conversations, customers, plans, audit_logs, human_handoff_queue, and memory_store.
+- Resolved and remaining issue extraction.
+- Policy DAG path, evidence, actions, and audit metadata.
+- Handoff queue metadata.
+- Handoff summary embedding the generated context-card result.
+- API success, missing conversation, and validation responses.
+
+Verified:
+- python -B scripts\test_context_card.py
+- python -B scripts\test_handoff_summary.py
+- python -B scripts\test_tool_audit_logging.py
+
+
+2. Resolved vs. remaining issues summary
+
+Implemented and ticked the resolved-vs-remaining issues summary task.
+
+Updated backend/tools.py with:
+- issues_summary field on ContextCardResult.
+- _issues_summary() helper.
+- _issue_labels() helper.
+- Counts for total, resolved, and remaining issues.
+- all_resolved and has_remaining flags.
+- resolved_labels and remaining_labels for dashboard display.
+- summary_text for compact human-agent handoff context.
+
+Expanded scripts/test_context_card.py with:
+- Exact resolved/remaining counts.
+- Resolved and remaining issue labels.
+- Human-readable summary text.
+- Confirmation that generate_handoff_summary() carries the summary inside its embedded context card.
+
+Verified:
+- python -B scripts\test_context_card.py
+- python -B scripts\test_handoff_summary.py
+
+
+3. Policy DAG path traversed so far
+
+Implemented and ticked the Policy DAG path traversed so far task.
+
+Updated backend/tools.py with:
+- policy_dag_path_so_far field on ContextCardResult.
+- _policy_dag_path_so_far() helper.
+- Explicit nodes list copied from audit_logs.policy_dag_path.
+- node_count, current_node, has_started, and is_complete metadata.
+- path_text for compact dashboard display.
+- policy_status and UJCS attached to the traversed path.
+- source marker showing the path came from audit_logs.policy_dag_path.
+
+Kept policy_nodes_visited unchanged for backward compatibility.
+
+Expanded scripts/test_context_card.py with:
+- Exact traversed node order.
+- Current node detection.
+- Path text generation.
+- Policy status and UJCS preservation.
+- Confirmation that generate_handoff_summary() carries the DAG path block inside its embedded context card.
+
+Verified:
+- python -B scripts\test_context_card.py
+- python -B scripts\test_handoff_summary.py
+
+
+4. generate_opening_line() - recommended first sentence for human agent
+
+Implemented and ticked the generate_opening_line() task.
+
+Updated backend/tools.py with:
+- OpeningLineResult dataclass.
+- generate_opening_line(conversation_id=None, context_card=None, handoff_reason=None, db_path=...).
+- Conversation-backed opening line generation through the real context-card builder.
+- Direct context-card opening line generation when a caller already has the card.
+- One-sentence human-agent opening that names the customer, references remaining issue labels, and tells the customer they do not need to repeat details.
+- Fallback opening for fully resolved cards using the escalation reason.
+- Stable metadata: opening_line_id, customer_id, customer_name, issue_labels, reason_for_escalation, and has_remaining_issues.
+
+Updated generate_context_card() to use the same opening-line text logic for recommended_opening.
+
+Updated backend/api/routes.py with:
+- POST /api/tools/generate_opening_line.
+- Tool-call audit logging for generate_opening_line.
+
+Updated backend/__init__.py with:
+- OpeningLineResult export.
+- generate_opening_line export.
+
+Expanded scripts/test_context_card.py with:
+- Opening line generation from conversation_id.
+- Opening line generation from an existing context card.
+- Fully resolved-card fallback wording.
+- API success for conversation and context-card payloads.
+- Missing conversation and invalid input validation.
+
+Verified:
+- python -B scripts\test_context_card.py
+- python -B scripts\test_handoff_summary.py
+- python -B scripts\test_tool_audit_logging.py
+
+
+5. Rendered card display in dashboard (Case Detail, Handoff tab)
+
+Implemented and ticked the rendered dashboard handoff card task.
+
+Added backend/dashboard.py with:
+- RenderedHandoffCard dataclass.
+- render_case_handoff_tab(case_id, db_path=...).
+- render_handoff_context_card_html(context_card).
+- Case-id lookup through audit_logs to retrieve the session-backed context card.
+- Case Detail tab layout with Handoff selected.
+- Rendered handoff card sections for customer, opening line, issue summary, queue state, health, relationship score, policy DAG path, evidence, actions, memory, and last customer message.
+- HTML escaping for all dynamic values before display.
+- Responsive CSS for desktop and mobile widths.
+
+Updated backend/api/routes.py with:
+- GET /api/cases/{case_id}/handoff returning the rendered Handoff tab as HTML.
+- 404 for missing cases.
+- 422 for invalid case IDs.
+
+Updated backend/api/app.py with:
+- dashboard_router registration.
+
+Updated backend/__init__.py with:
+- RenderedHandoffCard export.
+- render_case_handoff_tab export.
+- render_handoff_context_card_html export.
+
+Added scripts/test_dashboard_handoff_card.py covering:
+- Real SQLite case detail rendering from conversations, audit_logs, human_handoff_queue, and memory_store.
+- Handoff tab active state.
+- Opening line, issue summary, policy path, handoff queue, memory, and last-message display.
+- Escaped unsafe evidence text.
+- FastAPI HTML endpoint success and missing/invalid case responses.
+
+Verified:
+- python -B scripts\test_dashboard_handoff_card.py
+- python -B scripts\test_context_card.py
+- python -B scripts\test_fastapi_scaffold.py
+
+
+Feature 10 - Resolution Proof Trail
+-----------------------------------
+
+1. build_audit_log() - assembles evidence, tools, DAG path, actions
+
+Implemented and ticked the build_audit_log() task.
+
+Updated backend/tools.py with:
+- AuditLogDraft dataclass.
+- build_audit_log(case_id, customer_id=..., session_id=..., tools_called=None, evidence_used=None, action_taken=None, policy_dag_path=None, tool_results=None, policy_result=None, context_card=None, ujcs=None, policy_status=None, health_score=None, handoff_required=False).
+- Pure proof-trail assembly without SQLite writes.
+- Tool-call assembly from direct tools_called, runtime tool_results, and context-card tool history.
+- Evidence assembly from direct evidence_used, tool result evidence/evidence_used fields, and context-card evidence.
+- Action assembly from direct action_taken, tool result action/action_taken/actions/actions_taken fields, and context-card actions.
+- Policy DAG path assembly from explicit policy_dag_path first, then policy_result/tool result paths, then context-card policy_dag_path_so_far or policy_nodes_visited.
+- UJCS, policy_status, health_score, and handoff_required assembly from explicit args, policy/tool results, and context-card audit metadata.
+- JSON-serializable validation and deterministic dedupe across tool_name/name/tool aliases.
+- Human summary and raw_json generated for the assembled draft.
+
+Updated generate_audit_log() to call build_audit_log() before persistence, so persisted audit rows use the same proof-trail assembly contract.
+
+Updated backend/__init__.py with:
+- AuditLogDraft export.
+- build_audit_log export.
+
+Expanded scripts/test_audit_log.py with:
+- Runtime artifact assembly from direct lists, tool results, context cards, and policy metadata.
+- Explicit policy path precedence.
+- Built raw_json and human_summary checks.
+- Validation coverage for malformed builder inputs.
+- Regression coverage proving generate_audit_log() still persists the assembled payload.
+
+Verified:
+- python -B scripts\test_audit_log.py
+- python -B scripts\test_tool_audit_logging.py
+- python -B scripts\test_handoff_audit_event.py
+
+
+2. UJCS computed and stored
+
+Implemented and ticked the UJCS computed and stored task.
+
+Updated backend/tools.py with:
+- policy_name support in build_audit_log().
+- policy_name support in generate_audit_log().
+- UJCS computation from policy_name + policy_dag_path using the existing compute_ujcs() helper and default policy DAG registry.
+- Explicit UJCS preservation when callers provide one.
+- Policy-result/tool-result/context-card UJCS fallback preserved.
+- Automatic policy_status derivation from computed UJCS when policy_status is not provided.
+- Computed UJCS passed into the existing audit_logs.ujcs persistence path.
+
+Updated backend/api/routes.py with:
+- Optional policy_name on POST /api/tools/generate_audit_log.
+- API path now computes and stores UJCS when policy_name and policy_dag_path are supplied.
+
+Expanded scripts/test_audit_log.py with:
+- build_audit_log() computes UJCS from service_credit_dag path.
+- generate_audit_log() persists computed UJCS to audit_logs.ujcs.
+- API endpoint computes UJCS from policy_name + policy_dag_path.
+- Explicit UJCS still takes precedence.
+
+Verified:
+- python -B scripts\test_audit_log.py
+- python -B scripts\test_policy_graph.py
+- python -B scripts\test_tool_audit_logging.py
+
+
+3. policy_status = "compliant" if UJCS > 0.8
+
+Implemented and ticked the policy_status threshold task.
+
+Confirmed backend/tools.py already derives policy_status through _policy_status_from_ujcs():
+- pending when UJCS is missing.
+- compliant only when UJCS > 0.8.
+- non_compliant when UJCS == 0.
+- needs_review for partial UJCS values up to and including 0.8.
+
+Expanded scripts/test_audit_log.py with:
+- Boundary check that UJCS exactly 0.8 is not compliant.
+- Boundary check that UJCS 0.8001 is compliant.
+- Zero-UJCS non_compliant check.
+- Missing-UJCS pending check.
+- Persistence check proving generate_audit_log() stores policy_status="compliant" when UJCS > 0.8.
+
+Verified:
+- python -B scripts\test_audit_log.py
+- python -B scripts\test_tool_audit_logging.py
+- python -B scripts\test_policy_graph.py
+
+
+4. Human-readable tab + raw JSON tab in dashboard
+
+Implemented and ticked the dashboard proof-trail tabs task.
+
+Updated backend/dashboard.py with:
+- RenderedAuditLogTabs dataclass.
+- render_case_audit_log_tabs(case_id, db_path=...).
+- render_audit_log_tabs_html(raw_json).
+- Audit-log row parsing from audit_logs into a stable raw_json proof-trail payload.
+- Case Detail Proof Trail view with two tabs: Human-readable and Raw JSON.
+- Human-readable sections for status, UJCS, health score, handoff flag, tool calls, evidence, actions, policy DAG path, and generated proof summary.
+- Raw JSON tab rendering the parsed audit payload in a preformatted block.
+- HTML escaping for both human-readable values and raw JSON display.
+
+Updated backend/api/routes.py with:
+- GET /api/cases/{case_id}/audit_log returning the rendered Proof Trail tabs as HTML.
+- 404 for missing cases.
+- 422 for invalid case IDs.
+
+Updated backend/__init__.py with:
+- RenderedAuditLogTabs export.
+- render_case_audit_log_tabs export.
+- render_audit_log_tabs_html export.
+
+Added scripts/test_dashboard_audit_tabs.py covering:
+- Real SQLite audit-log rendering.
+- Human-readable tab presence.
+- Raw JSON tab presence.
+- Tool, evidence, action, UJCS, status, and policy DAG display.
+- Escaped unsafe evidence text.
+- FastAPI HTML endpoint success and missing/invalid case responses.
+
+Verified:
+- python -B scripts\test_dashboard_audit_tabs.py
+- python -B scripts\test_dashboard_handoff_card.py
+- python -B scripts\test_audit_log.py
+- python -B scripts\test_fastapi_scaffold.py
+
+
+9. Session-start behavior based on relationship score (HEALTHY / DRIFTING / AT-RISK)
+
+Implemented and ticked the session-start behavior task.
+
+Updated backend/agent/health.py with:
+- SessionStartBehavior dataclass.
+- session_start_behavior().
+- Relationship-score routing:
+  - >=70 -> HEALTHY.
+  - 40-70 -> DRIFTING.
+  - <40 -> AT_RISK.
+- Opening modes for standard, stabilize, and CASA-required starts.
+- Priority levels for normal, elevated, and urgent handling.
+- CASA sequence flag for AT_RISK sessions without implementing the CASA sequence itself.
+- Support for RelationshipScore objects and raw numeric scores.
+
+Updated backend/agent/__init__.py with:
+- SessionStartBehavior export.
+- session_start_behavior export.
+
+Expanded scripts/test_health_score.py with:
+- Exact threshold boundary tests.
+- RelationshipScore-object input coverage.
+- CASA flag checks for AT_RISK only.
+- Invalid input validation checks.
+
+Verified:
+- python -B scripts\test_health_score.py
+- python -B scripts\test_intent_classifier.py
+- python -B scripts\test_handoff_summary.py
+
+
+10. CASA empathy sequence for AT-RISK customers (score < 40)
+
+Implemented and ticked the CASA empathy sequence task.
+
+Updated backend/agent/health.py with:
+- CASAEmpathyStep dataclass.
+- CASAEmpathySequence dataclass.
+- casa_empathy_sequence().
+- Four-step CASA sequence:
+  - Connect.
+  - Acknowledge.
+  - Stabilize.
+  - Act.
+- Hard guard so CASA can only run for relationship scores below 40.
+- Customer name and issue-summary context injection with safe defaults.
+- Verification-before-action flags on Stabilize and Act steps.
+- Completion gate requiring CASA before normal automated resolution resumes.
+
+Updated backend/agent/__init__.py with:
+- CASAEmpathyStep export.
+- CASAEmpathySequence export.
+- casa_empathy_sequence export.
+
+Expanded scripts/test_health_score.py with:
+- Four-step CASA structure checks.
+- AT_RISK score/state checks.
+- Customer and issue context checks.
+- Safe default checks for blank context.
+- Rejection tests for non-AT_RISK scores and invalid scores.
+
+Verified:
+- python -B scripts\test_health_score.py
+- python -B scripts\test_intent_classifier.py
+- python -B scripts\test_handoff_summary.py
+
+
+Feature 4 - Policy Graph / Policy DAG
+-------------------------------------
+
+1. PolicyNode dataclass
+
+Implemented and ticked the PolicyNode dataclass task.
+
+Added backend/agent/policy_graph.py with:
+- CONDITION_TYPES for tool_check, llm_check, and threshold_check.
+- PolicyNode dataclass for policy DAG condition and leaf-action nodes.
+- Strict validation for node_id, condition_type, edges, and action-node shape.
+- is_leaf property.
+- next_node() edge traversal helper.
+- to_dict() and from_dict() helpers for serialization and tests.
+
+Exported PolicyNode and CONDITION_TYPES from backend/agent/__init__.py.
+
+Added scripts/test_policy_graph.py covering:
+- Condition node normalization and edge traversal.
+- Leaf action node shape and args.
+- Dict round trip.
+- Invalid DAG node validation.
+
+Verified:
+- python -B scripts\test_policy_graph.py
+
+
+Feature 5 - Tool-Calling Layer
+------------------------------
+
+1. FastAPI project scaffold (backend/)
+
+Implemented and ticked the FastAPI project scaffold task.
+
+Added backend/api package with:
+- backend/api/app.py app factory.
+- backend/api/main.py ASGI app entrypoint.
+- backend/api/routes.py router module.
+- backend/api/__init__.py exports.
+
+Added:
+- create_app() returning a configured FastAPI instance.
+- module-level app for uvicorn: backend.api.main:app.
+- GET /api/health endpoint.
+- OpenAPI schema exposure through FastAPI defaults.
+
+Updated requirements.txt with:
+- fastapi==0.115.12
+- uvicorn[standard]==0.34.2
+
+Added scripts/test_fastapi_scaffold.py covering:
+- App factory type/title.
+- /api/health response contract.
+- /openapi.json route registration.
+
+Verified:
+- python -B scripts\test_fastapi_scaffold.py
+
+
+2. lookup_customer()
+
+Implemented and ticked the lookup_customer() task.
+
+Added backend/tools.py with:
+- CustomerProfile dataclass.
+- lookup_customer(customer_id, db_path=...) backed by SQLite.
+- Join against plans so customer lookup includes plan name, monthly price, and speed.
+- identity_verified and account_active flags for policy DAG/tool-call usage.
+- None return for unknown customers and ValueError for empty customer_id.
+
+Updated FastAPI routes with:
+- GET /api/tools/lookup_customer/{customer_id}
+- Standard tool response envelope: tool_name, ok, result.
+- 404 for missing customers.
+
+Added scripts/test_lookup_customer.py covering:
+- Real seeded customer lookup.
+- Suspended account account_active=False.
+- Missing customer behavior.
+- Empty customer_id validation.
+- FastAPI endpoint response and 404 behavior.
+
+Verified:
+- python -B scripts\test_lookup_customer.py
+- python -B scripts\test_fastapi_scaffold.py
+- python -B scripts\test_policy_graph.py
+
+
+3. get_invoice_history()
+
+Implemented and ticked the get_invoice_history() task.
+
+Updated backend/tools.py with:
+- InvoiceRecord dataclass.
+- get_invoice_history(customer_id, months=3, db_path=..., reference_date=...) backed by SQLite.
+- Date-window filtering using the requested month lookback.
+- Newest-first invoice ordering.
+- Payment metadata joined from payments: payment amount, payment date, method, and duplicate flag.
+- Empty list for unknown customers.
+- Validation for empty customer_id, invalid months, and empty reference_date.
+
+Updated FastAPI routes with:
+- GET /api/tools/get_invoice_history/{customer_id}?months=3
+- Standard tool response envelope with customer_id, months, invoices, and invoice_count.
+
+Added scripts/test_invoice_history.py covering:
+- Real seeded invoice lookup for CUST-1001.
+- Duplicate-charge payment metadata.
+- Month-window filtering.
+- Unknown customer behavior.
+- Input validation.
+- FastAPI endpoint response and validation behavior.
+
+Updated backend/__init__.py exports.
+
+Verified:
+- python -B scripts\test_invoice_history.py
+
+
+4. check_duplicate_charge()
+
+Implemented and ticked the check_duplicate_charge() task.
+
+Updated backend/tools.py with:
+- DuplicateChargeResult dataclass.
+- check_duplicate_charge(customer_id, lookback_days=30, db_path=..., reference_date=...) backed by SQLite.
+- Real duplicate detection using duplicate-charge policy requirements:
+  - same customer ID.
+  - same payment amount.
+  - same payment method.
+  - payment timestamps within 10 minutes.
+  - one matching invoice for the billing date and amount.
+- Evidence output for audit/policy validation.
+- duplicate_confirmed field for duplicate_charge_refund_dag traversal.
+- Negative results for unknown customers or clean payment histories.
+- Validation for empty customer_id, invalid lookback_days, and empty reference_date.
+
+Updated FastAPI routes with:
+- GET /api/tools/check_duplicate_charge/{customer_id}?lookback_days=30
+- Standard tool response envelope.
+
+Added scripts/test_duplicate_charge.py covering:
+- Seeded CUST-1001 duplicate detection.
+- Clean customer and outside-lookback negative cases.
+- Single matching invoice requirement.
+- Input validation.
+- FastAPI endpoint response and validation behavior.
+
+Updated backend/__init__.py exports.
+
+Verified:
+- python -B scripts\test_duplicate_charge.py
+
+
+5. check_outage_status()
+
+Implemented and ticked the check_outage_status() task.
+
+Updated backend/tools.py with:
+- OutageStatus dataclass.
+- check_outage_status(location, customer_id=None, db_path=..., reference_date=...) backed by SQLite.
+- Latest outage lookup by service location.
+- verified, outage_id, start_time, end_time, duration_hours, affected_area, and affected_customers output.
+- customer_affected flag when customer_id is supplied.
+- outage_cleared flag for technician-dispatch policy checks.
+- Safe no-outage response for unknown locations.
+- Validation for empty location, empty customer_id, and empty reference_date.
+
+Updated FastAPI routes with:
+- GET /api/tools/check_outage_status?location=...&customer_id=...
+- Standard tool response envelope.
+
+Added scripts/test_outage_status.py covering:
+- Verified Chennai Zone-04 outage affecting CUST-1001.
+- Unverified/open outage behavior.
+- Missing location behavior.
+- Input validation.
+- FastAPI endpoint response and validation behavior.
+
+Updated backend/__init__.py exports.
+
+Verified:
+- python -B scripts\test_outage_status.py
+
+
+6. run_router_diagnostic()
+
+Implemented and ticked the run_router_diagnostic() task.
+
+Updated backend/tools.py with:
+- RouterDiagnosticResult dataclass.
+- run_router_diagnostic(customer_id, db_path=..., reference_date=...) backed by SQLite diagnostics.
+- customer_found and diagnostic_available flags.
+- router_status, signal_strength, last_checked, recommendation, and account_active output.
+- diagnostic_failure and needs_technician flags for technician_dispatch_dag.
+- Explicit unavailable diagnostic response when no diagnostic row exists.
+- Validation for empty customer_id and empty reference_date.
+
+Updated FastAPI routes with:
+- GET /api/tools/run_router_diagnostic/{customer_id}
+- Standard tool response envelope.
+
+Added scripts/test_router_diagnostic.py covering:
+- Degraded router diagnostic requiring technician.
+- Healthy router diagnostic.
+- Known customer with missing diagnostic row.
+- Unknown customer behavior.
+- Input validation.
+- FastAPI endpoint response.
+
+Updated backend/__init__.py exports.
+
+Verified:
+- python -B scripts\test_router_diagnostic.py
+
+
+7. retrieve_policy()
+
+Implemented and ticked the retrieve_policy() task.
+
+Updated backend/tools.py with:
+- PolicyRetrievalResult dataclass.
+- retrieve_policy(policy_name, query=None, policy_dir=..., top_k=3).
+- Policy lookup by policy_id, title, or filename-style alias.
+- Full policy text return from docs/policies.
+- Self-RAG retrieve decision metadata.
+- CRAG relevance metadata.
+- Top evidence strips from the policy document.
+- None return for unknown policy names.
+- Validation for empty policy_name, empty query, and invalid top_k.
+
+Updated FastAPI routes with:
+- GET /api/tools/retrieve_policy/{policy_name}?query=...&top_k=3
+- Standard tool response envelope.
+- 404 for unknown policies.
+
+Updated backend/api/app.py with:
+- policy_dir app state injection for tests and future deployments.
+
+Added scripts/test_retrieve_policy.py covering:
+- Service credit policy retrieval by policy ID.
+- Refund and duplicate-charge alias lookup.
+- Self-RAG/CRAG metadata presence.
+- Evidence strip top_k behavior.
+- Missing policy and input validation.
+- FastAPI endpoint response, 404, and 422 behavior.
+
+Updated backend/__init__.py exports.
+
+Verified:
+- python -B scripts\test_retrieve_policy.py
+
+
+8. apply_credit() with policy validation gate
+
+Implemented and ticked the apply_credit() task.
+
+Updated backend/tools.py with:
+- CreditApplicationResult dataclass.
+- apply_credit(customer_id, amount, reason, policy_context=..., policy_name="service_credit_dag", applied_to_invoice=None, db_path=...).
+- PolicyGraphValidator.authorize_action() gate before any database write.
+- Code-level enforcement of DAG action args such as max_amount.
+- Customer and invoice ownership validation before inserting credits.
+- Transactional insert into the credits table only after policy prerequisites pass.
+- Policy traversal metadata in the result: policy_name, policy_action, policy_action_args, policy_path, UJCS, and policy_status.
+
+Updated FastAPI routes with:
+- POST /api/tools/apply_credit
+- Standard tool response envelope.
+- 409 response when the policy DAG blocks the action.
+- 422 response for invalid inputs or missing policy context.
+
+Updated backend/__init__.py exports.
+
+Added scripts/test_apply_credit.py covering:
+- Successful service-credit insertion after verified outage, duration, and prior-credit checks.
+- Database row verification in credits.
+- Unverified outage blocking before write.
+- Amount-cap blocking before write.
+- Partial-credit DAG path for short verified outages.
+- Customer, invoice, and input validation.
+- FastAPI endpoint success, blocked, and invalid-context behavior.
+
+Verified:
+- python -B scripts\test_apply_credit.py
+
+
+9. create_ticket()
+
+Implemented and ticked the create_ticket() task.
+
+Updated backend/tools.py with:
+- TicketCreationResult dataclass.
+- create_ticket(customer_id, issue_type, priority="medium", status="open", policy_name=None, policy_context=None, db_path=...).
+- SQLite-backed insert into the tickets table.
+- Customer existence validation before writing.
+- Status and priority validation against the schema values.
+- Optional PolicyGraphValidator.authorize_action() gate when policy_name is supplied.
+- DAG ticket_type enforcement so policy-approved ticket paths cannot create the wrong ticket category.
+- Policy traversal metadata in the result: policy_name, policy_action, policy_action_args, policy_path, UJCS, and policy_status.
+
+Updated FastAPI routes with:
+- POST /api/tools/create_ticket
+- Standard tool response envelope.
+- 409 response when the policy DAG blocks the ticket action or ticket_type mismatch.
+- 422 response for invalid inputs or missing policy context.
+
+Updated backend/__init__.py exports.
+
+Added scripts/test_create_ticket.py covering:
+- Plain ticket creation without policy validation.
+- Duplicate-charge refund-review ticket creation through duplicate_charge_refund_dag.
+- Cancellation-retention ticket creation through cancellation_retention_dag.
+- Policy prerequisite blocking before write.
+- Policy ticket_type mismatch blocking before write.
+- Customer, status, priority, and policy-context validation.
+- FastAPI endpoint success, blocked, and invalid-priority behavior.
+
+Verified:
+- python -B scripts\test_create_ticket.py
+
+
+10. schedule_technician()
+
+Implemented and ticked the schedule_technician() task.
+
+Updated backend/tools.py with:
+- TechnicianScheduleResult dataclass.
+- schedule_technician(customer_id, time_slot, policy_context=..., policy_name="technician_dispatch_dag", ticket_id=None, db_path=...).
+- PolicyGraphValidator.authorize_action() gate against technician_dispatch_dag before scheduling.
+- Enforcement that the reached DAG leaf is schedule_technician and requires a linked ticket.
+- New technician dispatch ticket creation when no ticket_id is provided.
+- Existing ticket linking when ticket_id is provided, including customer ownership validation.
+- Ticket update to in_progress/high priority for scheduled dispatch.
+- Appointment response with appointment_id, slot confirmation, assigned technician name, linked ticket, and policy traversal metadata.
+
+Updated FastAPI routes with:
+- POST /api/tools/schedule_technician
+- Standard tool response envelope.
+- 409 response when policy prerequisites block dispatch.
+- 422 response for invalid inputs, missing context, missing ticket, or ticket ownership mismatch.
+
+Updated backend/__init__.py exports.
+
+Added scripts/test_schedule_technician.py covering:
+- Technician scheduling after account, diagnostic, outage-cleared, and selected-slot checks pass.
+- Durable ticket creation in the tickets table.
+- Linking and updating an existing ticket.
+- Active-outage and missing-slot policy blocks before write.
+- Customer, slot, policy context, policy name, ticket ID, and ticket ownership validation.
+- FastAPI endpoint success, blocked, and invalid-slot behavior.
+
+Verified:
+- python -B scripts\test_schedule_technician.py
+
+
+11. change_plan()
+
+Implemented and ticked the change_plan() task.
+
+Updated backend/tools.py with:
+- PlanChangeResult dataclass.
+- change_plan(customer_id, new_plan_id, policy_context=..., policy_name="plan_downgrade_dag", effective_date=None, db_path=...).
+- PolicyGraphValidator.authorize_action() gate before any plan update.
+- Enforcement that plan_downgrade_dag may only perform downgrade changes.
+- Customer and requested-plan lookup from SQLite.
+- Current-plan to target-plan comparison for change_type.
+- Customer plan_id update only after policy prerequisites, target plan, and change type are valid.
+- Next-billing-cycle effective-date handling, with explicit effective_date override for deterministic tests.
+- Fee disclosure metadata for promo-lockin downgrade paths.
+- Policy traversal metadata in the result: policy_name, policy_action, policy_action_args, policy_path, UJCS, and policy_status.
+
+Updated FastAPI routes with:
+- POST /api/tools/change_plan
+- Standard tool response envelope.
+- 409 response when the policy DAG blocks the change or the change type conflicts with the DAG.
+- 422 response for invalid inputs, missing customer, missing plan, same-plan request, or bad effective date.
+
+Updated backend/__init__.py exports.
+
+Added scripts/test_change_plan.py covering:
+- Valid downgrade after account, overdue-invoice, plan-availability, price/speed, and promo checks.
+- Customer plan_id persistence in the customers table.
+- Promo lock-in downgrade path with fee disclosure.
+- Overdue-invoice policy blocking before update.
+- Upgrade attempt blocked through plan_downgrade_dag.
+- Customer, target plan, policy context, policy name, same-plan, and effective-date validation.
+- FastAPI endpoint success, blocked, and invalid-target-plan behavior.
+
+Verified:
+- python -B scripts\test_change_plan.py
+
+
+12. generate_handoff_summary()
+
+Implemented and ticked the generate_handoff_summary() task.
+
+Updated backend/tools.py with:
+- HandoffSummaryResult dataclass.
+- generate_handoff_summary(conversation_id, handoff_reason=None, db_path=...).
+- Conversation lookup joined with customer and plan details.
+- Audit-log enrichment for tools, evidence, actions, policy DAG path, health score, policy status, and handoff flag.
+- Recent memory_store context for the customer.
+- Context-card fields for customer, issues detected, issues resolved, issues remaining, emotion, urgency, slots, tools, policies, policy nodes, evidence, actions, escalation reason, recommended opening, memory context, and last customer message.
+- No insertion into human_handoff_queue yet; that remains separate for Feature 8.
+
+Updated FastAPI routes with:
+- POST /api/tools/generate_handoff_summary
+- Standard tool response envelope.
+- 404 response for missing conversation IDs.
+- 422 response for invalid conversation_id or handoff_reason.
+
+Updated backend/__init__.py exports.
+
+Added scripts/test_handoff_summary.py covering:
+- Real seeded conversation summary generation.
+- Customer, plan, slot, tool, policy, evidence, policy path, issue status, memory, and recommended-opening fields.
+- Confirmation that generate_handoff_summary() does not insert into human_handoff_queue.
+- Missing conversation and input validation.
+- FastAPI endpoint success, 404, and 422 behavior.
+
+Verified:
+- python -B scripts\test_handoff_summary.py
+
+
+13. generate_audit_log()
+
+Implemented and ticked the generate_audit_log() task.
+
+Updated backend/tools.py with:
+- AuditLogResult dataclass.
+- generate_audit_log(case_id, customer_id=..., session_id=..., tools_called=..., evidence_used=..., action_taken=..., policy_dag_path=..., ujcs=None, policy_status=None, health_score=None, handoff_required=False, db_path=...).
+- Customer and conversation/session validation before writing.
+- Session/customer ownership validation.
+- JSON-serializable list validation for tools, evidence, actions, and policy DAG path.
+- UJCS and health-score range validation.
+- policy_status inference from UJCS: compliant when UJCS > 0.8, needs_review for partial traversal, non_compliant for zero, pending when UJCS is missing.
+- Idempotent insert/update into audit_logs by case_id.
+- Human-readable summary plus raw JSON proof-trail payload in the returned result.
+
+Updated FastAPI routes with:
+- POST /api/tools/generate_audit_log
+- Standard tool response envelope.
+- 422 response for invalid inputs, missing customer, missing session, or session/customer mismatch.
+
+Updated backend/__init__.py exports.
+
+Added scripts/test_audit_log.py covering:
+- Real audit-log persistence into audit_logs.
+- Tools, evidence, actions, policy path, UJCS, policy_status, health score, and handoff flag.
+- Idempotent update behavior for an existing case_id.
+- UJCS-derived policy status and explicit policy_status preservation.
+- Customer/session reference validation and JSON-list validation.
+- FastAPI endpoint success and validation behavior.
+
+Verified:
+- python -B scripts\test_audit_log.py
+
+
+14. Tool call logging to audit_logs table on every call
+
+Implemented and ticked the tool-call audit logging task.
+
+Updated backend/api/routes.py with:
+- Central _log_tool_call() helper used by every concrete tool endpoint.
+- Header-driven audit context:
+  - X-ResolveFlow-Session-Id selects the live conversation/session.
+  - X-ResolveFlow-Case-Id selects the audit case row, defaulting to case-{session_id}.
+  - X-ResolveFlow-Customer-Id supplies customer context for tools such as retrieve_policy that do not include customer_id in the route.
+- Automatic conversation shell creation when an audited session has not been inserted yet.
+- Append-only tools_called updates for repeated tool calls in the same case.
+- Evidence appending for policy retrieval, duplicate checks, outage checks, diagnostics, and credit actions.
+- Action appending for apply_credit, create_ticket, schedule_technician, change_plan, and generate_handoff_summary.
+- Policy DAG path, UJCS, and policy_status capture from policy-gated action tools.
+- Graceful no-op behavior when no audit headers are present, so standalone tool calls still work.
+
+Added scripts/test_tool_audit_logging.py covering:
+- Multiple GET tool calls appending into one audit_logs row in order.
+- Automatic conversation shell creation for audited sessions.
+- Policy action logging for apply_credit, including action_taken, evidence, policy path, UJCS, and policy_status.
+- retrieve_policy logging using X-ResolveFlow-Customer-Id.
+- Calls without audit context continue to work and do not create audit rows.
+
+Verified:
+- python -B scripts\test_tool_audit_logging.py
+
+
+Feature 6 - Clarification Engine
+--------------------------------
+
+1. Slot schema defined for all intents (billing, outage, cancellation, etc.)
+
+Implemented and ticked the slot schema task.
+
+Added backend/agent/slot_schema.py with:
+- SlotDefinition dataclass.
+- IntentSlotSchema dataclass.
+- SLOT_SCHEMA covering every allowed classifier intent:
+  - billing_dispute.
+  - duplicate_charge.
+  - service_outage.
+  - router_issue.
+  - plan_change.
+  - cancellation_intent.
+  - refund_request.
+  - technician_request.
+  - general_query.
+- Required and optional slot definitions with value_type, priority, prompt, aliases, and examples.
+- REQUIRED_SLOTS generated from the schema.
+- get_slot_schema().
+- slot_schema_as_dict().
+- validate_slot_schema().
+
+Updated backend/agent/issue_queue.py with:
+- Required slots now imported from backend/agent/slot_schema.py instead of a local hardcoded map.
+
+Updated backend/agent/__init__.py exports.
+
+Added scripts/test_slot_schema.py covering:
+- Schema coverage for all ALLOWED_INTENTS.
+- Required slot contract for billing, outage, cancellation, refund, technician, plan change, and general query intents.
+- Slot value types for money and datetime fields.
+- Alias and prompt metadata.
+- Stable schema serialization.
+- Issue queue compatibility with the schema.
+- Bad schema definition validation.
+
+Verified:
+- python -B scripts\test_slot_schema.py
+
+
+2. Missing required slot detection
+
+Implemented and ticked the missing required slot detection task.
+
+Updated backend/agent/slot_schema.py with:
+- MissingSlot dataclass for structured missing-slot results.
+- detect_missing_required_slots(intent, slots=None).
+- missing_required_slot_names(intent, slots=None).
+- Shared slot presence handling for None, blank strings, and empty containers.
+- Input validation for unknown intents and non-dict slot payloads.
+
+Updated backend/agent/issue_queue.py with:
+- slot_progress_for_issue() now uses detect_missing_required_slots() from the slot schema module.
+- IssueQueue.next_missing_slot() continues to work from the same schema-backed detection.
+
+Updated backend/agent/__init__.py exports.
+
+Expanded scripts/test_slot_schema.py with:
+- Structured missing slot metadata checks.
+- Priority-ordered missing slot detection.
+- Complete-slot and empty-container handling.
+- Bad input validation.
+
+Expanded scripts/test_issue_queue.py with:
+- Schema-backed refund_request missing slot detection through IssueQueue.slot_progress().
+
+Verified:
+- python -B scripts\test_slot_schema.py
+- python -B scripts\test_issue_queue.py
+
+
+3. prioritize_slot() - ask highest-priority slot first
+
+Implemented and ticked the prioritize_slot() task.
+
+Updated backend/agent/slot_schema.py with:
+- prioritize_slot(intent, slots=None).
+- Returns the highest-priority MissingSlot object for the intent.
+- Returns None when all required slots are present.
+- Reuses detect_missing_required_slots(), so validation and blank/empty handling stay consistent.
+
+Updated backend/agent/issue_queue.py with:
+- IssueQueue.next_missing_slot() now uses prioritize_slot() instead of directly reading the first missing slot name.
+
+Updated backend/agent/__init__.py exports.
+
+Expanded scripts/test_slot_schema.py with:
+- Priority selection for refund_request customer_id before amount/reason.
+- Priority selection of amount before reason once customer_id is known.
+- None return for complete required slots.
+
+Expanded scripts/test_issue_queue.py with:
+- Queue-level next missing slot behavior through prioritize_slot().
+- Confirmation that the queue advances to the next issue once the current issue is complete.
+
+Verified:
+- python -B scripts\test_slot_schema.py
+- python -B scripts\test_issue_queue.py
+
+
+4. Targeted question generator (one slot per question, no vague asks)
+
+Implemented and ticked the targeted question generator task.
+
+Updated backend/agent/slot_schema.py with:
+- TargetedQuestion dataclass.
+- generate_targeted_question(intent, slots=None).
+- Uses prioritize_slot() to ask for exactly one highest-priority missing required slot.
+- Returns None when all required slots are present.
+- Reuses targeted prompts from the slot schema instead of vague clarification text.
+
+Updated backend/agent/issue_queue.py with:
+- IssueQueue.targeted_question(slots=None), which asks for the current highest-priority missing slot across the ordered issue queue.
+
+Updated backend/agent/__init__.py exports.
+
+Expanded scripts/test_slot_schema.py with:
+- Targeted outage location question.
+- Refund amount before reason behavior.
+- None return for complete slot sets.
+- Guard that generated questions do not combine multiple requested slots.
+
+Expanded scripts/test_issue_queue.py with:
+- Queue-level targeted question generation.
+- Advancement from duplicate-charge invoice question to outage location question once duplicate-charge slots are complete.
+
+Verified:
+- python -B scripts\test_slot_schema.py
+- python -B scripts\test_issue_queue.py
+
+
+5. decide_next_action() - ANSWER / ASK / CALL_TOOL / HANDOFF decision
+
+Implemented and ticked the decide_next_action() task.
+
+Updated backend/agent/clarification.py with:
+- NextActionDecision dataclass for structured router decisions.
+- NEXT_ACTIONS contract covering ANSWER, ASK, CALL_TOOL, and HANDOFF.
+- TOOL_BY_INTENT mapping from detected intent to the real backend tool name.
+- decide_next_action() orchestration over the current unresolved issue.
+- ASK routing through the targeted question generator when the current issue is missing a required slot.
+- CALL_TOOL routing when required slots are complete and the issue needs a backend tool.
+- ANSWER routing when no pending issue remains or the current issue does not require a tool.
+- HANDOFF preemption for explicit handoff requests, backend tool failures, and low conversation health.
+- Input validation for slot payloads and health thresholds.
+
+Updated backend/agent/__init__.py exports.
+
+Added scripts/test_clarification.py covering:
+- ASK for the current issue's missing required slot.
+- CALL_TOOL when required slots are complete.
+- ANSWER for complete general queries and resolved queues.
+- HANDOFF preemption before ASK or CALL_TOOL.
+- Advancement to the next unresolved issue.
+- Bad input validation.
+
+Verified:
+- python -B scripts\test_clarification.py
+- python -B scripts\test_slot_schema.py
+- python -B scripts\test_issue_queue.py
+
+
+Feature 6A - Guided User Action Coordinator
+-------------------------------------------
+
+1. GuidedActionCoordinator class with state enum
+
+Implemented and ticked the GuidedActionCoordinator class with state enum task.
+
+Added backend/agent/guided_action.py with:
+- GuidedActionState enum covering IDLE, WAITING, VERIFYING, RESOLVED, FAILED, and ESCALATED.
+- VALID_STATE_TRANSITIONS state machine for the guided action lifecycle.
+- GuidedActionTransition dataclass for auditable state transition records.
+- GuidedActionCoordinator dataclass with action_name, customer_id, state, attempt_count, max_attempts, context, and transition history.
+- can_transition_to() validation helper.
+- transition() method that validates legal movement and records transition metadata.
+- is_terminal property for RESOLVED and ESCALATED states.
+- to_dict() serialization for API/logging use.
+- Input validation for action names, customer IDs, state names, attempt counts, and context payloads.
+
+Updated backend/agent/__init__.py exports.
+
+Added scripts/test_guided_action.py covering:
+- State enum contract.
+- Allowed transition map for IDLE -> WAITING -> VERIFYING -> RESOLVED and FAILED -> ESCALATED.
+- Coordinator initialization and serialization.
+- Transition history recording with metadata.
+- Terminal-state detection.
+- Invalid transition and bad input rejection.
+
+Verified:
+- python -B scripts\test_guided_action.py
+- python -B scripts\test_clarification.py
+- python -B scripts\test_issue_queue.py
+
+
+2. instruct() - single-step instruction generation, enters WAITING
+
+Implemented and ticked the instruct() task.
+
+Updated backend/agent/guided_action.py with:
+- DEFAULT_ACTION_INSTRUCTIONS for supported guided actions such as router_reset, modem_reseat, and wifi_reconnect.
+- GuidedActionInstruction dataclass for structured instruction payloads.
+- GuidedActionCoordinator.instruct().
+- Single-step instruction validation that rejects multi-line/list-style instructions.
+- WAITING transition through the existing state machine.
+- Attempt count increment on each instruction.
+- Current instruction persistence on the coordinator for API/logging use.
+- Transition metadata carrying attempt_number and caller-provided context.
+- Max-attempt guard before issuing another instruction.
+
+Updated backend/agent/__init__.py exports.
+
+Expanded scripts/test_guided_action.py with:
+- Default router_reset instruction generation.
+- Custom single-step instruction support.
+- State transition to WAITING.
+- Attempt count increment.
+- Current instruction serialization.
+- Rejection of invalid states, max-attempt overflow, and multi-step/list instructions.
+
+Verified:
+- python -B scripts\test_guided_action.py
+- python -B scripts\test_clarification.py
+- python -B scripts\test_issue_queue.py
+
+
+3. handle_user_report() - re-runs verification tool (never trusts claim)
+
+Implemented and ticked the handle_user_report() task.
+
+Updated backend/agent/guided_action.py with:
+- GuidedActionVerification dataclass for structured verification results.
+- GuidedActionCoordinator.handle_user_report().
+- WAITING -> VERIFYING transition when the customer reports completing the guided step.
+- Verification tool execution using the stored customer_id.
+- Default verification evaluator for router diagnostic payloads:
+  - customer_found must not be false.
+  - account_active must not be false.
+  - diagnostic_failure must be false.
+  - needs_technician must not be true.
+- Custom success_evaluator support for other guided actions such as speed tests.
+- RESOLVED transition only when the verification tool confirms success.
+- FAILED transition when the verification tool contradicts the user claim.
+- last_verification persistence and serialization for API/logging use.
+- Input validation for user reports, tool callables, tool names, and tool result shape.
+
+Updated backend/agent/__init__.py exports.
+
+Expanded scripts/test_guided_action.py with:
+- Successful verification tool call from WAITING.
+- Assertion that verification tool receives the customer_id.
+- VERIFYING transition logging with user report and tool name.
+- RESOLVED transition on healthy router diagnostic output.
+- FAILED transition when user claims fixed but diagnostic_failure remains true.
+- Custom success evaluator support.
+- Invalid state, empty report, non-callable tool, and invalid tool-result validation.
+
+Verified:
+- python -B scripts\test_guided_action.py
+- python -B scripts\test_clarification.py
+- python -B scripts\test_router_diagnostic.py
+
+
+4. Retry logic (MAX_ATTEMPTS = 2) with clearer second instruction
+
+Implemented and ticked the retry logic task.
+
+Updated backend/agent/guided_action.py with:
+- MAX_ATTEMPTS = 2 shared constant.
+- GuidedActionCoordinator default max_attempts now uses MAX_ATTEMPTS.
+- attempts_remaining property.
+- can_retry property.
+- Legal FAILED -> WAITING transition while attempts remain.
+- Retry support through instruct() after a failed verification.
+- Distinct second instruction text for router_reset, modem_reseat, and wifi_reconnect.
+- Third-attempt blocking once attempt_count reaches MAX_ATTEMPTS.
+- to_dict() now includes attempts_remaining and can_retry for API/UI state display.
+
+Updated backend/agent/__init__.py exports.
+
+Expanded scripts/test_guided_action.py with:
+- MAX_ATTEMPTS contract check.
+- FAILED -> WAITING retry transition validation.
+- First failed verification leaves one retry available.
+- Second router_reset instruction uses clearer retry wording instead of repeating the first instruction.
+- Attempt 2 enters WAITING and records transition metadata.
+- A second failed verification leaves the coordinator in FAILED with no retries remaining.
+- Third instruction attempt is rejected.
+
+Verified:
+- python -B scripts\test_guided_action.py
+- python -B scripts\test_clarification.py
+- python -B scripts\test_router_diagnostic.py
+
+
+5. Escalation path on FAILED state -> Feature 8 handoff
+
+Implemented and ticked the escalation path task.
+
+Updated backend/agent/guided_action.py with:
+- GuidedActionHandoff dataclass for structured handoff payloads.
+- GuidedActionCoordinator.escalate_to_handoff().
+- Guard that escalation can only run from FAILED.
+- Guard that escalation waits until retry attempts are exhausted.
+- FAILED -> ESCALATED transition through the state machine.
+- Default handoff reason that includes action name, attempt count, and failed verification tool.
+- Customer-facing specialist connection message.
+- Context card containing customer_id, action_name, attempt count, current instruction, last verification, and transition history.
+- Optional handoff_builder injection so Feature 8 queue insertion can plug in without changing the coordinator.
+- Handoff result preservation and serialization.
+- Input validation for handoff builder, handoff reason, customer message, and builder return shape.
+
+Updated backend/agent/__init__.py exports.
+
+Expanded scripts/test_guided_action.py with:
+- No escalation while a retry attempt remains.
+- Escalation after the second failed verification.
+- Feature 8 handoff builder invocation with customer_id, handoff_reason, context_card, and metadata.
+- Context card preservation of the failed diagnostic result.
+- ESCALATED terminal state and transition metadata.
+- Handoff serialization.
+- Bad escalation input validation.
+
+Verified:
+- python -B scripts\test_guided_action.py
+- python -B scripts\test_handoff_summary.py
+- python -B scripts\test_router_diagnostic.py
+
+Note:
+- This task adds the guided-action-to-handoff bridge. Actual insertion into human_handoff_queue remains the separate Feature 8 task.
+
+
+6. Audit log at every state transition
+
+Implemented and ticked the audit log at every state transition task.
+
+Updated backend/agent/guided_action.py with:
+- GuidedActionAuditEvent dataclass for structured transition audit records.
+- audit_events list on GuidedActionCoordinator.
+- Optional audit_sink callable for persistence into the existing audit layer or a Feature 8 writer.
+- Transition-layer audit emission inside GuidedActionCoordinator.transition().
+- One audit event per legal state transition.
+- Audit event payloads include event_id, action_name, customer_id, from_state, to_state, reason, timestamp, attempt_count, and transition metadata.
+- Audit events are serialized through GuidedActionCoordinator.to_dict().
+- Input validation for non-callable audit sinks.
+
+Updated backend/agent/__init__.py exports.
+
+Expanded scripts/test_guided_action.py with:
+- Manual transition audit coverage.
+- Assertion that audit_events count matches transition_history count.
+- audit_sink callback receiving WAITING, VERIFYING, and FAILED events in order.
+- Audit event identity, attempt count, metadata, and serialization checks.
+- Invalid audit_sink validation.
+
+Verified:
+- python -B scripts\test_guided_action.py
+- python -B scripts\test_audit_log.py
+- python -B scripts\test_handoff_summary.py
+
+
+7. Action-to-tool mapping (router_reset -> run_router_diagnostic, etc.)
+
+Implemented and ticked the action-to-tool mapping task.
+
+Updated backend/agent/guided_action.py with:
+- ACTION_TO_TOOL_MAP mapping:
+  - router_reset -> run_router_diagnostic.
+  - modem_reseat -> run_router_diagnostic.
+  - wifi_reconnect -> run_router_diagnostic.
+- GuidedActionTool dataclass for structured action/tool resolution.
+- resolve_action_tool(action_name, tool_registry=None).
+- guided_action_tool_map() public copy helper.
+- Default lazy tool registry that resolves run_router_diagnostic from backend.tools.
+- handle_user_report() can now use the mapped verification tool when no explicit verification_tool is passed.
+- Tool name metadata now records the mapped tool name in VERIFYING transitions.
+- Input validation for unknown actions, non-dict registries, and unavailable/non-callable mapped tools.
+
+Updated backend/agent/__init__.py exports.
+
+Expanded scripts/test_guided_action.py with:
+- router_reset mapping contract.
+- GuidedActionTool resolution using an injected registry.
+- guided_action_tool_map() copy behavior.
+- handle_user_report() using action-to-tool mapping automatically.
+- Mapped tool execution with customer_id.
+- Mapped tool name in verification and transition metadata.
+- Bad mapping/registry validation.
+
+Verified:
+- python -B scripts\test_guided_action.py
+- python -B scripts\test_router_diagnostic.py
+- python -B scripts\test_audit_log.py
+
+
+Feature 7 - Conversation Health Score
+-------------------------------------
+
+1. intent_confidence component from classifier softmax
+
+Implemented and ticked the intent_confidence component task.
+
+Updated backend/agent/intent_classifier.py with:
+- Softmax probability distribution over all ALLOWED_INTENTS for rule-based classification.
+- intent_probabilities field on IntentClassification.
+- intent_confidence field on IntentClassification.
+- Rule classifier confidence now comes from summed softmax mass over detected intents.
+- LLM parser accepts optional intent_probabilities and normalizes them.
+- LLM parser falls back to a probability distribution from the reported primary-intent confidence.
+- JSON serialization now includes intent_probabilities and intent_confidence.
+
+Added backend/agent/health.py with:
+- IntentConfidenceComponent dataclass.
+- intent_confidence_component(classification), sourced from classifier_softmax.
+- Probability normalization and validation.
+
+Updated backend/agent/__init__.py exports.
+
+Expanded scripts/test_intent_classifier.py with:
+- Softmax probability coverage across all allowed intents.
+- Probability mass normalization check.
+- intent_confidence equality with the health component.
+- LLM-provided intent_probabilities parsing.
+- Multi-intent summed confidence for service outage + technician request.
+
+Verified:
+- python -B scripts\test_intent_classifier.py
+- python -B scripts\test_issue_queue.py
+- python -B scripts\test_clarification.py
+
+
+2. missing_info_risk component from slot schema
+
+Implemented and ticked the missing_info_risk component task.
+
+Updated backend/agent/health.py with:
+- MissingInfoRiskComponent dataclass.
+- missing_info_risk_component(intents, slots=None).
+- Slot-schema-backed missing required slot detection.
+- Priority-weighted risk where weight = 1 / slot.priority, so customer_id blocks more than lower-priority details.
+- Risk value computed as missing_required_weight / total_required_weight.
+- Missing slot metadata preserving intent, slot, value_type, priority, prompt, aliases, and computed weight.
+- Intent de-duplication while preserving order.
+- Empty-intent fallback to general_query.
+- Input validation for intent lists, unknown intents, and non-dict slot payloads.
+
+Updated backend/agent/__init__.py exports.
+
+Added scripts/test_health_score.py covering:
+- intent_confidence still sourced from classifier softmax.
+- missing_info_risk weighted calculation for duplicate charge + outage slots.
+- Zero risk when all required slots are present.
+- Higher risk for missing customer_id than missing lower-priority refund reason.
+- Intent de-duplication and general_query fallback.
+- Bad input validation.
+
+Verified:
+- python -B scripts\test_health_score.py
+- python -B scripts\test_slot_schema.py
+- python -B scripts\test_intent_classifier.py
+
+
+3. sentiment_score component - LLM sentiment classifier on last 3 messages
+
+Implemented and ticked the sentiment_score component task.
+
+Updated backend/agent/health.py with:
+- SentimentScoreComponent dataclass.
+- sentiment_score_component(messages, llm_client=None).
+- build_sentiment_prompt(messages).
+- Strict JSON LLM prompt for label, score, and rationale.
+- Last-three-message truncation before prompt construction.
+- LLM JSON parsing with fenced JSON support.
+- Score normalization where 1.0 is positive/calm and 0.0 is angry/hostile.
+- Allowed labels: positive, calm, neutral, concerned, frustrated, angry.
+- Deterministic rule fallback for no-key/local execution.
+- Validation for message shape, empty role/content, and invalid LLM JSON.
+
+Updated backend/agent/__init__.py exports.
+
+Expanded scripts/test_health_score.py with:
+- Rule fallback sentiment classification from the last three messages.
+- LLM JSON sentiment parsing.
+- Prompt check proving older messages are omitted.
+- Source labels for rule and LLM paths.
+- Bad input and bad JSON validation.
+
+Verified:
+- python -B scripts\test_health_score.py
+- python -B scripts\test_intent_classifier.py
+- python -B scripts\test_slot_schema.py
+
+
+4. loop_penalty component - detect repeated questions (2x/3x threshold)
+
+Implemented and ticked the loop_penalty component task.
+
+Updated backend/agent/health.py with:
+- LoopPenaltyComponent dataclass.
+- loop_penalty_component(messages).
+- User-question normalization that ignores case, punctuation, and repeated question marks.
+- Assistant messages excluded from loop detection.
+- Non-question user statements excluded from loop detection.
+- Threshold behavior:
+  - 0 repeated questions -> penalty 0.0.
+  - same normalized question 2x -> penalty 0.5.
+  - same normalized question 3x or more -> penalty 1.0.
+- question_counts metadata for diagnostics.
+- repeated_question and repeated_question_count fields for UI/audit use.
+- Input validation shared with message cleaning.
+
+Updated backend/agent/__init__.py exports.
+
+Expanded scripts/test_health_score.py with:
+- 2x repeated-question penalty.
+- 3x repeated-question penalty.
+- Ignoring assistant repetition.
+- Ignoring non-question user statements.
+- Bad input validation.
+
+Verified:
+- python -B scripts\test_health_score.py
+- python -B scripts\test_intent_classifier.py
+- python -B scripts\test_slot_schema.py
+
+
+5. knowledge_coverage component - tool call + CRAG confidence
+
+Implemented and ticked the knowledge_coverage component task.
+
+Updated backend/agent/health.py with:
+- KnowledgeCoverageComponent dataclass.
+- knowledge_coverage_component(tools_called, crag_evaluations=None, required_tools=None).
+- Tool-call normalization for strings and dicts using name/tool_name/tool.
+- Tool success detection from ok, status, error, and exception fields.
+- Required-tool coverage when required_tools is supplied.
+- Open tool coverage when required_tools is omitted.
+- CRAG score extraction from CRAG dataclasses, plain score dicts, relevance.score, and evaluation.score shapes.
+- CRAG confidence as average extracted CRAG score.
+- Final knowledge coverage as 0.5 * tool_coverage + 0.5 * crag_confidence.
+- Input validation for tool calls, CRAG evaluation entries, and required tool lists.
+
+Updated backend/agent/__init__.py exports.
+
+Expanded scripts/test_health_score.py with:
+- Combined required-tool coverage + CRAG confidence calculation.
+- Failed tool call lowering coverage.
+- Open successful tool list coverage.
+- CRAG score clamping through existing score normalization.
+- Empty evidence returning zero coverage.
+- Bad input validation.
+
+Verified:
+- python -B scripts\test_health_score.py
+- python -B scripts\test_policy_retrieval.py
+- python -B scripts\test_audit_log.py
+
+
+6. compute_health_score() - weighted formula
+
+Implemented and ticked the compute_health_score() task.
+
+Updated backend/agent/health.py with:
+- HealthScore dataclass.
+- compute_health_score().
+- Exact weighted formula:
+  H = 0.30*ic + 0.25*(1-mr) + 0.20*ss + 0.15*(1-lp) + 0.10*kc.
+- Score returned on a 0-100 scale.
+- Components stored as normalized 0-1 values.
+- Contribution breakdown stored for each weighted term.
+- Support for passing either raw numeric component values or component dataclass objects with a value field.
+- Validation that every component is numeric and between 0 and 1.
+
+Updated backend/agent/__init__.py exports.
+
+Expanded scripts/test_health_score.py with:
+- Exact formula test producing score 67.25 from known inputs.
+- Contribution breakdown checks.
+- Component-object input checks using real classifier, slot, sentiment, loop, and knowledge components.
+- Bad component range/type validation.
+
+Verified:
+- python -B scripts\test_health_score.py
+- python -B scripts\test_intent_classifier.py
+- python -B scripts\test_policy_retrieval.py
+
+
+4. Remaining Feature 4 policy DAGs and traversal engine
+
+Implemented and ticked:
+- cancellation_retention_dag.
+- technician_dispatch_dag.
+- plan_downgrade_dag.
+- refund_exception_dag.
+- PolicyGraphValidator.run() DPA traversal engine.
+- UJCS computation per traversal.
+- Code-level action blocking when DAG prerequisites are not satisfied.
+
+Updated backend/agent/policy_graph.py with:
+- PolicyTraversalStep dataclass.
+- PolicyValidationResult dataclass.
+- PolicyActionBlocked exception.
+- PolicyGraphValidator with run() and authorize_action().
+- evaluate_policy_condition() for tool_check, llm_check, and threshold_check nodes.
+- compute_ujcs().
+- assert_action_allowed().
+- default_policy_dags() registry for all six Feature 4 DAGs.
+
+Added DAG builders and module-level DAGs:
+- build_cancellation_retention_dag() / cancellation_retention_dag.
+- build_technician_dispatch_dag() / technician_dispatch_dag.
+- build_plan_downgrade_dag() / plan_downgrade_dag.
+- build_refund_exception_dag() / refund_exception_dag.
+
+Policy behavior covered:
+- Cancellation retention checks identity/account, open issues, and churn risk before guidance, ticket, or handoff.
+- Technician dispatch checks account eligibility, router diagnostic failure, outage cleared status, and selected appointment slot before scheduling.
+- Plan downgrade checks active account, overdue invoice, plan availability, price/speed confirmation, and promo lock-in fee disclosure.
+- Refund exception checks refund reason, payment ownership, 30-day window, and INR 500 amount cap before ticket, handoff, or denial.
+
+Expanded scripts/test_policy_graph.py with:
+- Remaining DAG shape and branch tests.
+- Default DAG registry test.
+- Condition evaluation tests for nested tool payloads and threshold comparisons.
+- Traversal tests across service credit, duplicate charge refund, technician dispatch, plan downgrade, and refund exception DAGs.
+- UJCS assertion.
+- PolicyActionBlocked tests that prove unsafe actions are blocked when prerequisites are not visited.
+
+Exported new Policy Graph APIs from backend/agent/__init__.py.
+
+Verified:
+- python -B scripts\test_policy_graph.py
+
+
+3. duplicate_charge_refund_dag
+
+Implemented and ticked the duplicate_charge_refund_dag task.
+
+Updated backend/agent/policy_graph.py with:
+- build_duplicate_charge_refund_dag().
+- module-level duplicate_charge_refund_dag.
+
+The duplicate charge refund DAG checks:
+- Duplicate payment confirmation via check_duplicate_charge.
+- Single matching invoice via get_invoice_history.
+- Refund request age <= 30 days.
+- Duplicate amount <= INR 500.
+
+Policy routing:
+- duplicate confirmed -> invoice match check.
+- duplicate not confirmed -> denial response.
+- invoice mismatch -> manual refund review.
+- payment older than 30 days -> manual refund review.
+- amount over INR 500 -> manual refund review.
+- valid duplicate within window and amount cap -> create duplicate-charge refund-review ticket.
+
+Exported build_duplicate_charge_refund_dag and duplicate_charge_refund_dag from backend/agent/__init__.py.
+
+Expanded scripts/test_policy_graph.py with:
+- Exact duplicate-charge DAG shape checks.
+- Duplicate confirmation branch checks.
+- Invoice match branch checks.
+- Refund-window and amount-cap threshold checks.
+- Leaf action checks for ticket creation, human handoff, and denial response.
+
+Verified:
+- python -B scripts\test_policy_graph.py
+
+
+2. service_credit_dag - 6-node DAG with outage + duration + prior credit checks
+
+Implemented and ticked the service_credit_dag task.
+
+Updated backend/agent/policy_graph.py with:
+- PolicyDAG dataclass for named DAGs with a start node and node map.
+- DAG validation that start_node exists, node keys match node IDs, and all edges target real nodes.
+- build_service_credit_dag().
+- module-level service_credit_dag.
+
+The service credit DAG has exactly 6 nodes:
+- check_outage_verified
+- check_outage_duration
+- check_prior_credit
+- auto_apply_credit
+- apply_partial_credit
+- manual_review_credit
+
+Policy routing:
+- verified outage -> duration check.
+- unverified outage -> manual review.
+- duration >= 6 hours -> prior credit check.
+- duration < 6 hours -> partial credit with max_amount 100.
+- no prior credit this cycle -> auto apply credit with max_amount 500.
+- prior credit this cycle -> manual review.
+
+Exported PolicyDAG, build_service_credit_dag, and service_credit_dag from backend/agent/__init__.py.
+
+Expanded scripts/test_policy_graph.py with:
+- PolicyDAG validation tests.
+- Exact 6-node service credit DAG shape checks.
+- Outage verification, duration threshold, and prior-credit branch checks.
+- Leaf action and credit-cap checks.
+
+Verified:
+- python -B scripts\test_policy_graph.py
+
+
+Cross-feature checklist additions
+---------------------------------
+
+Added and implemented extra tasks across Foundation, Feature 1, Feature 2, and Feature 3.
+
+Foundation additions:
+- Two-model LLM client split: LLMClient(model="primary"|"secondary").
+- Foundation integrity validator for schema, seed counts, policies, and scenarios.
+
+Implemented in:
+- backend/agent/llm_client.py
+- backend/db/validation.py
+- scripts/test_llm_client.py
+- scripts/test_foundation_validation.py
+
+The LLM client now supports primary/secondary Gemini model aliases from .env keys:
+- GEMINI_PRIMARY_MODEL
+- GEMINI_SECONDARY_MODEL
+- existing GEMINI_MODEL fallback for primary
+
+The foundation validator checks:
+- 13 expected SQLite tables.
+- 20 customers.
+- 20 invoices.
+- At least 20 payments.
+- 10 outages.
+- Verified and unverified outage coverage.
+- Duplicate charge seed scenario.
+- 8 policy docs.
+- 20 scenario scripts.
+
+Feature 1 additions:
+- Slot completion progress per issue.
+- Next missing slot helper for queued issues.
+
+Implemented in:
+- backend/agent/issue_queue.py
+- scripts/test_issue_queue.py
+
+Feature 2 additions:
+- Memory citation context builder for final answer prompts.
+- Formatted memory citation block with stable IDs.
+
+Implemented in:
+- backend/agent/memory_manager.py
+- scripts/test_memory_manager.py
+
+Feature 3 additions:
+- [IsSup] and [IsUse] scoring on final answer.
+- Final answer evidence gate using support/usefulness thresholds.
+
+Implemented in:
+- backend/agent/policy_retrieval.py
+- scripts/test_policy_retrieval.py
+
+Exported new public APIs from backend/agent/__init__.py.
+
+Verified:
+- python -B scripts\test_llm_client.py
+- python -B scripts\test_foundation_validation.py
+- python -B scripts\test_issue_queue.py
+- python -B scripts\test_intent_classifier.py
+- python -B scripts\test_acknowledgment.py
+- python -B scripts\test_resolution_loop.py
+- python -B scripts\test_memory_decomposition.py
+- python -B scripts\test_memory_query_expansion.py
+- python -B scripts\test_memory_reader.py
+- python -B scripts\test_memory_graph.py
+- python -B scripts\test_openie_extraction.py
+- python -B scripts\test_memory_manager.py
+- python -B scripts\test_policy_retrieval.py
+- python -B scripts\test_memory_store.py
+- python -B scripts\test_policy_ingestion.py
+- python -B scripts\test_policy_ingestion.py
+- python -B scripts\test_policy_ingestion.py
+- python -B scripts\test_memory_manager.py
+- Live Gemini Self-RAG check returned [Retrieve] for a duplicate-payment refund request.
+
+
+4. CRAG: relevance evaluator (LLM-as-judge prompt)
+
+Implemented and ticked the CRAG relevance evaluator task.
+
+Updated backend/agent/policy_retrieval.py with:
+- CRAGRelevanceEvaluation dataclass.
+- CRAGRelevanceEvaluator using Gemini by default.
+- build_crag_relevance_prompt() LLM-as-judge prompt.
+- evaluate_policy_relevance() deterministic fallback for no-key/local use.
+- CRAG threshold routing: score > 0.6 -> correct, score < 0.2 -> incorrect, otherwise ambiguous.
+- Score-based label normalization so inconsistent LLM labels cannot bypass routing thresholds.
+
+Expanded scripts/test_policy_retrieval.py with:
+- CRAG prompt checks.
+- Rule-based relevance scoring checks.
+- LLM JSON parsing checks.
+- Threshold normalization and bad JSON validation.
+
+Verified:
+- python -B scripts\test_policy_retrieval.py
+- python -B scripts\test_policy_ingestion.py
+- python -B scripts\test_memory_manager.py
+- Live Gemini CRAG judge returned relevant/correct for a service-credit outage policy excerpt.
+
+
+5. CRAG: CORRECT path - strip decomposition + re-scoring
+
+Implemented and ticked the CRAG CORRECT path task.
+
+Updated backend/agent/policy_retrieval.py with:
+- PolicyStrip dataclass.
+- ScoredPolicyStrip dataclass.
+- CRAGCorrectPathResult dataclass.
+- decompose_policy_to_strips() for section/paragraph strip decomposition.
+- crag_correct_path() that re-scores each strip with the CRAG relevance evaluator.
+- Filtering to keep only strips scoring above the CRAG upper threshold (> 0.6).
+- Score-ordered refined evidence strips.
+- Heading-only strip filtering so titles are not treated as sufficient evidence.
+
+Expanded scripts/test_policy_retrieval.py with:
+- Strip decomposition tests.
+- Re-scoring and filtering tests.
+- Correct-path validation checks.
+
+Verified:
+- python -B scripts\test_policy_retrieval.py
+- python -B scripts\test_policy_ingestion.py
+- python -B scripts\test_memory_manager.py
+- Live Gemini CRAG CORRECT path returned the service-credit eligibility strip for a verified 8-hour outage query.
+
+
+6. CRAG: INCORRECT path - keyword query rewrite + retry
+
+Implemented and ticked the CRAG INCORRECT path task.
+
+Updated backend/agent/policy_retrieval.py with:
+- PolicyQueryRewrite dataclass.
+- CRAGKeywordRewriter using Gemini by default.
+- CRAGIncorrectPathResult dataclass.
+- build_crag_keyword_rewrite_prompt() for internal policy-search keyword rewriting.
+- rewrite_policy_query_keywords() deterministic fallback for local/no-key use.
+- crag_incorrect_path() that rewrites weak queries, retries the policy store, decomposes returned candidates into strips, and re-scores strips.
+- Lower-threshold filtering for retry strips, keeping strips with score > 0.2.
+
+Expanded scripts/test_policy_retrieval.py with:
+- Keyword rewrite prompt tests.
+- Rule-based rewrite expansion tests.
+- Incorrect-path retry and re-score tests with a fake policy store.
+- Input and bad JSON validation.
+
+Verified:
+- python -B scripts\test_policy_retrieval.py
+- python -B scripts\test_policy_ingestion.py
+- python -B scripts\test_memory_manager.py
+- Live Gemini + ChromaDB incorrect-path check rewrote "They took my money twice" to duplicate-charge/refund policy keywords and returned relevant refund/duplicate-charge strips.
+
+
+7. CRAG: AMBIGUOUS path - combine internal + external strips
+
+Implemented and ticked the CRAG AMBIGUOUS path task.
+
+Updated backend/agent/policy_retrieval.py with:
+- CRAGAmbiguousPathResult dataclass.
+- crag_ambiguous_path() for combining internal policy strips with external evidence strips.
+- Re-scoring for both internal and external strips through the CRAG relevance evaluator.
+- Lower-threshold filtering so ambiguous partial evidence can survive when score > 0.2.
+- mock_external_policy_strips() as the default no-network external provider for demo/MVP use.
+- External provider injection so Tavily, SerpAPI, Google Custom Search, or another real provider can be added later without changing CRAG routing logic.
+- External strip normalization for strings, dictionaries, and PolicyStrip objects while preserving source IDs.
+
+Expanded scripts/test_policy_retrieval.py with:
+- Internal + external strip combination tests.
+- External source preservation tests.
+- Default mock-provider/no-network tests.
+- Bad provider and bad input validation.
+
+Verified:
+- python -B scripts\test_policy_retrieval.py

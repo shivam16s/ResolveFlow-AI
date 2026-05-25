@@ -15,6 +15,7 @@ def initialize_database(db_path: Path = DEFAULT_DB_PATH) -> None:
 
     with sqlite3.connect(db_path) as connection:
         connection.execute("PRAGMA foreign_keys = ON")
+        connection.execute("PRAGMA journal_mode = MEMORY")
         connection.executescript(schema_sql)
 
 

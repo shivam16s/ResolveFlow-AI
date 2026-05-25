@@ -13,6 +13,9 @@ class GeminiClientError(RuntimeError):
     pass
 
 
+LLM_MODEL_ALIASES = ("primary", "secondary")
+
+
 class GeminiGenerateClient:
     """Small Gemini generateContent client backed by environment variables."""
 
@@ -76,6 +79,49 @@ class GeminiGenerateClient:
         return _extract_text(payload)
 
 
+class LLMClient:
+    """Named-model LLM client used by agent modules that need primary/secondary routing."""
+
+    def __init__(
+        self,
+        model: str = "primary",
+        *,
+        api_key: str | None = None,
+        env_path: str | Path | None = None,
+        timeout_seconds: int = 45,
+    ) -> None:
+        if model not in LLM_MODEL_ALIASES:
+            raise ValueError(f"model must be one of {LLM_MODEL_ALIASES}")
+
+        env_values = load_env_file(env_path)
+        self.model_alias = model
+        self.model_name = _model_name_for_alias(model, env_values)
+        self.client = GeminiGenerateClient(
+            api_key=api_key,
+            model=self.model_name,
+            env_path=env_path,
+            timeout_seconds=timeout_seconds,
+        )
+
+    def __call__(self, prompt: str) -> str:
+        return self.generate(prompt)
+
+    def generate(
+        self,
+        prompt: str,
+        *,
+        response_mime_type: str = "application/json",
+        temperature: float = 0.0,
+        max_output_tokens: int = 1024,
+    ) -> str:
+        return self.client.generate(
+            prompt,
+            response_mime_type=response_mime_type,
+            temperature=temperature,
+            max_output_tokens=max_output_tokens,
+        )
+
+
 def load_env_file(env_path: str | Path | None = None) -> dict[str, str]:
     path = Path(env_path) if env_path is not None else _default_env_path()
     if not path.exists():
@@ -112,3 +158,19 @@ def _extract_text(payload: dict[str, Any]) -> str:
     if not text:
         raise GeminiClientError(f"Gemini response text was empty: {payload}")
     return text
+
+
+def _model_name_for_alias(alias: str, env_values: dict[str, str]) -> str:
+    primary = (
+        os.getenv("GEMINI_PRIMARY_MODEL")
+        or env_values.get("GEMINI_PRIMARY_MODEL")
+        or os.getenv("GEMINI_MODEL")
+        or env_values.get("GEMINI_MODEL")
+        or "gemini-2.5-flash"
+    )
+    secondary = (
+        os.getenv("GEMINI_SECONDARY_MODEL")
+        or env_values.get("GEMINI_SECONDARY_MODEL")
+        or "gemini-2.5-flash-lite"
+    )
+    return primary if alias == "primary" else secondary

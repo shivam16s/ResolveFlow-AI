@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import sqlite3
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
@@ -8,6 +9,7 @@ from typing import Callable
 
 from backend.db.init_db import DEFAULT_DB_PATH, initialize_database
 
+from .health import compute_relationship_score
 from .memory import MemoryUnit, TranscriptInput, decompose_to_memory_units, fact_augmented_expansion
 from .memory_graph import (
     PPRMemoryResult,
@@ -59,6 +61,19 @@ class MergedMemoryResult:
         return asdict(self)
 
 
+@dataclass(frozen=True)
+class MemoryCitationContext:
+    memory_id: str
+    citation_id: str
+    text: str
+    metadata: dict
+    sources: list[str]
+    fused_score: float
+
+    def to_dict(self) -> dict:
+        return asdict(self)
+
+
 class MemoryManager:
     """Coordinates session-close memory indexing across vector and graph stores."""
 
@@ -97,6 +112,7 @@ class MemoryManager:
         if final_status not in FINAL_STATUSES:
             raise ValueError(f"final_status must be one of {FINAL_STATUSES}")
 
+        self._persist_relationship_start(customer_id, session_id)
         units = decompose_to_memory_units(session_transcript)
         if not units:
             session_closed = self._mark_session_closed(customer_id, session_id, final_status) if close_session else False
@@ -189,6 +205,27 @@ class MemoryManager:
             top_k=top_k,
         )
 
+    def retrieve_citation_context(
+        self,
+        *,
+        query: str,
+        customer_id: str,
+        top_k: int = 5,
+        max_chars_per_memory: int = 320,
+        memory_type: str | None = None,
+    ) -> list[MemoryCitationContext]:
+        results = self.retrieve(
+            query=query,
+            customer_id=customer_id,
+            top_k=top_k,
+            memory_type=memory_type,
+        )
+        return build_memory_citation_context(
+            results,
+            max_items=top_k,
+            max_chars_per_memory=max_chars_per_memory,
+        )
+
     def _extract_triples(self, unit: MemoryUnit) -> list[OpenIETriple]:
         return extract_openie_triples(unit.content, self.llm_client)
 
@@ -203,7 +240,46 @@ class MemoryManager:
     def _mark_session_closed(self, customer_id: str, session_id: str, final_status: str) -> bool:
         if not _table_exists(self.graph_connection, "conversations"):
             return False
+        if not _has_columns(
+            self.graph_connection,
+            "conversations",
+            {"relationship_score_start", "relationship_score_end", "relationship_delta"},
+        ):
+            return self._mark_session_closed_without_relationship_scores(customer_id, session_id, final_status)
 
+        completed_at = datetime.now(timezone.utc).isoformat()
+        start_score = self._relationship_score_start(customer_id, session_id)
+        end_score = self._relationship_score_end(customer_id, session_id, start_score)
+        relationship_delta = round(end_score - start_score, 2)
+        with self.graph_connection:
+            cursor = self.graph_connection.execute(
+                """
+                UPDATE conversations
+                SET final_status = ?,
+                    completed_at = ?,
+                    relationship_score_start = COALESCE(relationship_score_start, ?),
+                    relationship_score_end = ?,
+                    relationship_delta = ?
+                WHERE customer_id = ? AND session_id = ?
+                """,
+                (
+                    final_status,
+                    completed_at,
+                    start_score,
+                    end_score,
+                    relationship_delta,
+                    customer_id,
+                    session_id,
+                ),
+            )
+        return cursor.rowcount > 0
+
+    def _mark_session_closed_without_relationship_scores(
+        self,
+        customer_id: str,
+        session_id: str,
+        final_status: str,
+    ) -> bool:
         completed_at = datetime.now(timezone.utc).isoformat()
         with self.graph_connection:
             cursor = self.graph_connection.execute(
@@ -215,6 +291,79 @@ class MemoryManager:
                 (final_status, completed_at, customer_id, session_id),
             )
         return cursor.rowcount > 0
+
+    def _persist_relationship_start(self, customer_id: str, session_id: str) -> None:
+        if not _table_exists(self.graph_connection, "conversations"):
+            return
+        if not _has_columns(self.graph_connection, "conversations", {"relationship_score_start"}):
+            return
+        start_score = self._relationship_score_start(customer_id, session_id)
+        with self.graph_connection:
+            self.graph_connection.execute(
+                """
+                UPDATE conversations
+                SET relationship_score_start = COALESCE(relationship_score_start, ?)
+                WHERE customer_id = ? AND session_id = ?
+                """,
+                (start_score, customer_id, session_id),
+            )
+
+    def _relationship_score_start(self, customer_id: str, session_id: str) -> float:
+        row = self.graph_connection.execute(
+            """
+            SELECT relationship_score_start
+            FROM conversations
+            WHERE customer_id = ? AND session_id = ?
+            """,
+            (customer_id, session_id),
+        ).fetchone()
+        if row is not None and row[0] is not None:
+            return round(float(row[0]), 2)
+        return compute_relationship_score(self._past_session_scores(customer_id, exclude_session_id=session_id)).score
+
+    def _relationship_score_end(self, customer_id: str, session_id: str, start_score: float) -> float:
+        current_score = self._current_session_health_score(customer_id, session_id)
+        if current_score is None:
+            return start_score
+        return compute_relationship_score(
+            self._past_session_scores(customer_id, exclude_session_id=session_id) + [current_score]
+        ).score
+
+    def _past_session_scores(self, customer_id: str, *, exclude_session_id: str) -> list[float]:
+        rows = self.graph_connection.execute(
+            """
+            SELECT relationship_score_end, health_scores
+            FROM conversations
+            WHERE customer_id = ?
+              AND session_id <> ?
+              AND final_status <> 'active'
+            ORDER BY COALESCE(completed_at, created_at), created_at, session_id
+            """,
+            (customer_id, exclude_session_id),
+        ).fetchall()
+        scores = []
+        for row in rows:
+            relationship_score = _optional_score(row[0])
+            if relationship_score is not None:
+                scores.append(relationship_score)
+                continue
+            health_score = _latest_health_score(row[1])
+            if health_score is not None:
+                scores.append(health_score)
+        return scores
+
+    def _current_session_health_score(self, customer_id: str, session_id: str) -> float | None:
+        row = self.graph_connection.execute(
+            """
+            SELECT health_scores
+            FROM conversations
+            WHERE customer_id = ? AND session_id = ?
+            """,
+            (customer_id, session_id),
+        ).fetchone()
+        if row is None:
+            return None
+        return _latest_health_score(row[0])
 
     def _documents_for_graph_results(
         self,
@@ -252,6 +401,51 @@ def _table_exists(connection: sqlite3.Connection, table_name: str) -> bool:
         (table_name,),
     ).fetchone()
     return row is not None
+
+
+def _has_columns(connection: sqlite3.Connection, table_name: str, column_names: set[str]) -> bool:
+    columns = {
+        row[1]
+        for row in connection.execute(f"PRAGMA table_info({table_name})").fetchall()
+    }
+    return column_names <= columns
+
+
+def _optional_score(value) -> float | None:
+    if value is None:
+        return None
+    try:
+        score = float(value)
+    except (TypeError, ValueError):
+        return None
+    if score < 0 or score > 100:
+        return None
+    return round(score, 2)
+
+
+def _latest_health_score(raw_health_scores) -> float | None:
+    if raw_health_scores is None:
+        return None
+    try:
+        values = json.loads(raw_health_scores) if isinstance(raw_health_scores, str) else raw_health_scores
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(values, list):
+        return None
+    for item in reversed(values):
+        score = _score_from_health_item(item)
+        if score is not None:
+            return score
+    return None
+
+
+def _score_from_health_item(item) -> float | None:
+    if isinstance(item, dict):
+        for key in ("score", "health_score", "value"):
+            if key in item:
+                return _optional_score(item[key])
+        return None
+    return _optional_score(item)
 
 
 def _merge_memory_results(
@@ -316,3 +510,47 @@ def _merge_memory_results(
             result.memory_id,
         ),
     )[:top_k]
+
+
+def build_memory_citation_context(
+    results: list[MergedMemoryResult],
+    *,
+    max_items: int = 5,
+    max_chars_per_memory: int = 320,
+) -> list[MemoryCitationContext]:
+    if max_items < 1:
+        raise ValueError("max_items must be at least 1")
+    if max_chars_per_memory < 40:
+        raise ValueError("max_chars_per_memory must be at least 40")
+
+    contexts = []
+    for index, result in enumerate(results[:max_items], start=1):
+        contexts.append(
+            MemoryCitationContext(
+                memory_id=result.memory_id,
+                citation_id=f"M{index}",
+                text=_truncate_text(result.document, max_chars_per_memory),
+                metadata=result.metadata,
+                sources=result.sources,
+                fused_score=result.fused_score,
+            )
+        )
+    return contexts
+
+
+def format_memory_citation_context(contexts: list[MemoryCitationContext]) -> str:
+    lines = []
+    for context in contexts:
+        source_text = "+".join(context.sources) if context.sources else "unknown"
+        lines.append(
+            f"[{context.citation_id}] {context.text} "
+            f"(memory_id={context.memory_id}, source={source_text}, score={context.fused_score:.5f})"
+        )
+    return "\n".join(lines)
+
+
+def _truncate_text(text: str, max_chars: int) -> str:
+    normalized = " ".join(text.split())
+    if len(normalized) <= max_chars:
+        return normalized
+    return normalized[: max_chars - 3].rstrip() + "..."

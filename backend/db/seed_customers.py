@@ -5,7 +5,10 @@ import json
 import sqlite3
 from pathlib import Path
 
-from init_db import DEFAULT_DB_PATH, initialize_database
+try:
+    from .init_db import DEFAULT_DB_PATH, initialize_database
+except ImportError:  # pragma: no cover - keeps direct script execution working.
+    from init_db import DEFAULT_DB_PATH, initialize_database
 
 
 PLANS = [
@@ -113,6 +116,7 @@ def seed_customers(db_path: Path = DEFAULT_DB_PATH) -> None:
     initialize_database(db_path)
     with sqlite3.connect(db_path) as connection:
         connection.execute("PRAGMA foreign_keys = ON")
+        connection.execute("PRAGMA journal_mode = MEMORY")
         seed_plans(connection)
         connection.executemany(
             """

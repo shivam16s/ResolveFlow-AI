@@ -4,8 +4,11 @@ __pycache__/
 
 data/*.db
 data/*.db-*
+data/eval_*.json
 data/chroma/
 data/chroma_test*/
 data/chroma_debug*/
 *.db
 *.db-*
+
+frontend/dev-server.*.log

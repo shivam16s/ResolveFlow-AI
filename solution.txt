@@ -13,6 +13,7 @@ Every algorithm description is taken directly from the cited research paper.
 TABLE OF CONTENTS
 ================================================================================
 
+ 0. LLM Architecture: Two-Model Split
  1. Multi-Issue Intent Detection
  2. Customer Memory Layer
  3. Policy-Grounded Retrieval
@@ -32,6 +33,54 @@ Appendix B: Database Schema (full)
 Appendix C: Tool Definitions (full)
 Appendix D: 30-Day Build Order
 Appendix E: Research Paper Citations
+
+================================================================================
+LLM ARCHITECTURE: TWO-MODEL SPLIT
+================================================================================
+
+PURPOSE
+-------
+Use two models with different cost-latency profiles. The heavy model handles
+planning, long-context policy reasoning, and response generation. The light
+model handles high-frequency, low-context classification tasks. This matches
+the JourneyBench finding that structured orchestration matters more than raw
+model size — the right model for the right task beats one big model for all tasks.
+
+PRIMARY MODEL — Planning + Response Generation:
+  Claude Sonnet (or equivalent: GPT-4o, Gemini 1.5 Pro)
+  Characteristics: tool use, long context, instruction-following precision
+  Used for:
+    - Agent Planner — interprets issue queue + decides next action
+    - Policy Graph traversal — evaluates DAG node conditions
+    - Response Generator — produces final customer-facing response
+    - Memory reading — LongMemEval Stage 3 (llm_read_with_citation)
+
+SECONDARY MODEL — Routing + Classification (faster, cheaper):
+  Claude Haiku / Groq Llama 3 / Gemini Flash
+  Characteristics: fast, low-latency, sufficient for binary/short-output tasks
+  Used for:
+    - Intent classifier (Feature 1) — runs every turn
+    - Sentiment scorer (Feature 7) — runs every turn on last 3 messages
+    - Self-RAG [Retrieve] token decision (Feature 3) — yes/no/continue
+    - CRAG relevance scorer (Feature 3) — float in [0, 1]
+    - RAGAS faithfulness judge (Feature 11) — float per response
+
+WHY THIS SPLIT MATTERS:
+  - Intent classification and sentiment scoring run every turn. Using the
+    heavy model adds latency and cost with no quality benefit — these are
+    short-input classification tasks, not long-context reasoning.
+  - Policy reasoning and tool orchestration require instruction-following
+    precision that only the heavy model provides reliably.
+  - JourneyBench finding: "Structured orchestration matters more than model
+    size." A well-orchestrated smaller model beats a larger model without
+    structure. The same principle applies within a single system: route each
+    task to the right model, not the most powerful one.
+
+IMPLEMENTATION NOTE:
+  Both models are called through a unified LLMClient interface:
+    LLMClient(model="primary").generate(prompt)   # heavy model
+    LLMClient(model="secondary").generate(prompt) # light model
+  Swap the underlying model without changing any calling code.
 
 ================================================================================
 FEATURE 1: MULTI-ISSUE INTENT DETECTION
@@ -1365,8 +1414,74 @@ RESEARCH BASIS (SECONDARY)
   - Communication errors: failed to get needed info from user
   - Coordination errors: agent and user took inconsistent actions
 
+RESEARCH BASIS (TERTIARY)
+--------------------------
+RAGAS (arXiv 2309.15217): "Ragas: Automated Evaluation of Retrieval Augmented
+Generation" — Es, James, Anke, Schockaert, 2023.
+
+Provides four automated metrics for RAG quality, independent of task success:
+  faithfulness:       Are all claims in the response grounded in retrieved docs?
+  answer_relevancy:   Is the response relevant to the customer's question?
+  context_precision:  Did retrieval bring back the RIGHT policy document?
+  context_recall:     Did retrieval capture ALL the relevant policy needed?
+
+A response can pass task_success (DB goal state matched) but fail faithfulness
+if the agent guessed policy text rather than retrieving it. Both must pass for
+a case to be marked truly resolved.
+
+RESEARCH BASIS (QUATERNARY)
+----------------------------
+Non-Collaborative User Simulators: "Beyond Task Success: A Closer Look at
+Non-Collaborative Users in Dialogue Systems."
+
+Four user behaviour patterns that specifically degrade agent performance:
+  impatient:    User interrupts mid-resolution, demands immediate action
+  tangential:   User drifts off topic mid-conversation
+  incomplete:   User provides only partial information per turn
+  unavailable:  User requests a service the system cannot provide
+
+Key finding: unavailable-service requests produce the highest hallucination
+rate — agents fabricate alternatives that do not exist rather than clearly
+denying. These patterns are absent from standard τ-bench scenarios, which
+assume cooperative users throughout.
+
+RESEARCH BASIS (QUINARY)
+-------------------------
+AgentRewardBench: "Evaluating Automatic Evaluators for Agentic Tasks."
+
+Key finding: no single automatic judge works reliably across all agent
+settings. Rule-based/deterministic scoring underreports actual success on
+ambiguous or multi-step cases because correct intermediate behaviours are
+not captured by binary goal-state comparison alone. A combination of three
+complementary judge types is required.
+
 IMPLEMENTATION
 --------------
+
+EVALUATION METHODOLOGY (THREE-LAYER APPROACH):
+-----------------------------------------------
+AgentRewardBench finding: no single judge is sufficient. ResolveFlow uses all three.
+
+  Layer 1 — Deterministic verifier (τ-bench method):
+    Compare actual DB state to goal state.
+    Binary pass/fail. Cannot be gamed. Catches tool failures and wrong actions.
+
+  Layer 2 — RAGAS automatic judge:
+    Run on every policy retrieval in test scenarios (cases 01–13).
+    Measures faithfulness, context_precision, context_recall, answer_relevancy.
+    Catches retrieval quality issues the deterministic layer misses entirely.
+    Target thresholds: faithfulness > 0.90, context_precision > 0.85.
+
+  Layer 3 — Human transcript review:
+    Applied to held-out cases: 04, 05, 11, 12, 13 (hard and ambiguous).
+    Human reviewer reads full transcript and judges:
+      - Did the agent behave appropriately given policy?
+      - Was tone appropriate for the customer's emotional state?
+      - Would a real customer feel resolved?
+    Include 3 annotated human-reviewed transcripts in the repo.
+    AgentRewardBench shows Layer 1 alone underreports success on these cases.
+    Layer 3 catches this gap and provides the evidence judges need to trust
+    the evaluation results.
 
 TEST SCENARIOS:
 
@@ -1420,6 +1535,28 @@ TEST SCENARIOS:
     Expected: loop detection in health score → handoff triggered
     DB goal state: handoff record created
 
+  case_11_impatient_user:
+    User interrupts mid-resolution: "Just fix it, I don't have time for this"
+    Expected: agent does NOT restart from scratch, preserves issue queue state
+    Success: resolution continues without re-collecting already-known slots
+    Research basis: Non-Collaborative User Simulators — impatient users cause
+                    agents to abandon progress and restart from the beginning
+
+  case_12_tangential_user:
+    User drifts mid-conversation: starts with billing, shifts to asking about
+    competitor plans, then returns to billing
+    Expected: agent handles digression, returns to primary issue queue
+    Success: original billing issue resolved despite topic drift
+
+  case_13_unavailable_service_request:
+    User: "I want a full refund for my last 3 months"
+    Expected: policy DAG denies (exceeds 30-day lookback + ₹500 limit),
+              agent explains limitation clearly without fabricating alternatives
+    DB goal state: no credit created, denial response logged to audit trail
+    Research basis: Non-Collaborative User Simulators — unavailable service
+                    requests produce the highest hallucination rate; agents
+                    fabricate policies that do not exist
+
 METRICS:
 
   1. resolution_success_rate = cases resolved correctly / total cases
@@ -1433,7 +1570,36 @@ METRICS:
   8. customer_repetition     = 1 if agent asked for info customer already
                                provided (binary, per case)
 
-  pass^k for reliability: run each case k=5 times, report pass^5.
+  9. non_collaborative_degradation = performance drop on cases 11–13 vs.
+                               cases 01–10. Target: < 15% drop (vs. much
+                               higher industry average on non-cooperative users)
+
+  pass^k for reliability: run each case k=5 times (13 cases), report pass^5.
+
+RAGAS EVALUATION LAYER
+----------------------
+Research basis: RAGAS (arXiv 2309.15217) — measures RAG quality independent
+of task success. Run on every policy retrieval across all 13 test cases.
+
+  ragas_metrics = {
+    "faithfulness":      # Are all claims in the response grounded in retrieved documents?
+      # Score: 0.0 to 1.0. Target: > 0.90
+      # Catches hallucinations that the task_success metric misses.
+
+    "answer_relevancy":  # Is the response relevant to the customer's question?
+      # Score: 0.0 to 1.0. Target: > 0.85
+
+    "context_precision": # Did retrieval bring back the RIGHT policy document?
+      # High precision = no irrelevant policy docs in context.
+
+    "context_recall":    # Did retrieval capture ALL the relevant policy needed?
+      # Low recall = agent answered without the full evidence.
+  }
+
+  # Both task_success (Layer 1) and faithfulness (Layer 2) must pass for a
+  # case to be marked truly resolved. A case that passes task_success but
+  # fails faithfulness means the agent guessed the policy rather than
+  # retrieving it — the correct answer for the wrong reason.
 
 BENCHMARK COMPARISON TARGETS
 -----------------------------
@@ -1453,6 +1619,11 @@ improvement over it — verified by the evaluation harness above.
                                                          prevents skipping)
   Hallucination rate            not measured            0 claims without
                                                          tool-call backing
+  RAGAS faithfulness            not measured            > 0.90 (zero
+                                                         hallucinated policy
+                                                         claims)
+  RAGAS context precision       not measured            > 0.85 (right policy
+                                                         retrieved each time)
   ─────────────────────────────────────────────────────────────────────────
 
 Note on policy compliance: unlike model-trust approaches where the LLM may or
@@ -1806,11 +1977,35 @@ DAYS 25–27: Evaluation Harness (Feature 11)
   - pass^k runner (k=5)
   - 8-metric report
 
-DAYS 28–30: Polish + Demo
-  - Easy demo case: simple billing query
-  - Hard demo case: duplicate charge + outage + cancellation
-  - README with architecture diagram
-  - Demo video recording
+DAYS 28–30: Polish + Submission
+
+  PRIMARY DEMO VIDEO:
+    - Scripted, deterministic mock backend (no live LLM calls in the video)
+    - Pre-load exact customer state, outage record, and policy outcome
+    - Record TWO takes of the hard case — use the better one
+    - Hard case: duplicate charge + outage + cancellation (all 3 intents)
+    - Highlight the Feature 6A router reset moment:
+        WAITING → VERIFYING → 183 Mbps (single most memorable sequence)
+    - Show relationship score arc: 29 → 58, churn risk: Reduced
+
+  FALLBACK DEMO PATH:
+    - Prepare a second, fully pre-rendered walkthrough video
+      (screen recording with voiceover, no live system dependency)
+    - If live URL fails during judging, fallback video loads instantly
+    - Store both videos at separate URLs (YouTube + Google Drive)
+
+  SUBMISSION FINAL CHECKLIST:
+    □ Public GitHub repo with clean README
+    □ Architecture diagram in repo
+    □ Setup instructions tested from a fresh environment
+    □ Evaluation results table in README (all 9 metrics, 13 test cases)
+    □ Primary demo video (public URL, tested from incognito browser)
+    □ Fallback demo video (separate URL, same incognito test)
+    □ Live URL (only if stable — skip if unreliable)
+    □ Project description > 50 words in portal
+    □ Originality certification signed
+    □ Submission receipt / trace ID saved as PDF
+    □ All repo links tested from incognito before final submit
 
 ================================================================================
 APPENDIX E: RESEARCH PAPER CITATIONS
@@ -1888,6 +2083,25 @@ APPENDIX E: RESEARCH PAPER CITATIONS
      Used for: Feature 2 (Customer Memory Layer) — knowledge graph construction via
                OpenIE, Personalized PageRank retrieval, node specificity weighting,
                single-step multi-hop recall, synonymy edges at cosine threshold τ=0.8
+
+[12] RAGAS: "Ragas: Automated Evaluation of Retrieval Augmented Generation"
+     arXiv 2309.15217 | Es, James, Anke, Schockaert, 2023
+     https://arxiv.org/abs/2309.15217
+     Used for: Feature 11 (Evaluation Harness) — faithfulness, answer_relevancy,
+               context_precision, context_recall metrics on all policy retrievals;
+               Layer 2 of the three-layer evaluation methodology
+
+[13] Non-Collaborative User Simulators: "Beyond Task Success: A Closer Look at
+     Non-Collaborative Users in Dialogue Systems"
+     Balaraman, Magnini, Dinarelli et al.
+     Used for: Feature 11 (Evaluation Harness) — test cases 11–13 (impatient,
+               tangential, unavailable service); non_collaborative_degradation
+               metric; identifies hallucination spike on unavailable service requests
+
+[14] AgentRewardBench: "Evaluating Automatic Evaluators for Agentic Tasks"
+     Used for: Feature 11 (Evaluation Harness) — three-layer evaluation methodology
+               (deterministic + RAGAS + human review); finding that no single
+               automatic judge is sufficient for reliable agentic task evaluation
 
 ================================================================================
 END OF DOCUMENT
