@@ -182,3 +182,123 @@ export interface EvaluationReport {
   avg_ragas_faithfulness: number;
   scenarios: ScenarioResult[];
 }
+
+// ── RAG Knowledge Explorer ────────────────────────────────────────────────────
+
+export interface MemorySearchResult {
+  memory_id: string;
+  document: string;
+  fused_score: number;
+  sources: string[];
+  vector_rank: number | null;
+  graph_rank: number | null;
+  metadata: Record<string, unknown>;
+}
+
+export interface PolicyRetrievalResult {
+  policy_name: string;
+  chunk: string;
+  confidence: number;
+  crag_path: "CORRECT" | "INCORRECT" | "AMBIGUOUS";
+  rewritten_query?: string;
+}
+
+export interface MemoryGraphNode {
+  node_id: string;
+  label: string;
+  node_type: string;
+  supporting_passages: string[];
+}
+
+export interface MemoryGraphEdge {
+  source: string;
+  target: string;
+  relation: string;
+  weight: number;
+}
+
+export interface MemoryGraphData {
+  customer_id: string;
+  nodes: MemoryGraphNode[];
+  edges: MemoryGraphEdge[];
+}
+
+// ── Health & Tools API ────────────────────────────────────────────────────────
+
+export interface HealthResponse {
+  status: string;
+  service: string;
+  version: string;
+  timestamp: string;
+}
+
+export interface ToolResponse {
+  tool_name: string;
+  ok: boolean;
+  result: Record<string, unknown>;
+}
+
+export interface ApplyCreditRequest {
+  customer_id: string;
+  amount: number;
+  reason: string;
+  policy_context: Record<string, unknown>;
+  policy_name?: string;
+  applied_to_invoice?: string | null;
+}
+
+export interface CreateTicketRequest {
+  customer_id: string;
+  issue_type: string;
+  priority?: string;
+  status?: string;
+  policy_name?: string | null;
+  policy_context?: Record<string, unknown> | null;
+}
+
+export interface ScheduleTechnicianRequest {
+  customer_id: string;
+  time_slot: string;
+  policy_context: Record<string, unknown>;
+  policy_name?: string;
+  ticket_id?: string | null;
+}
+
+export interface ChangePlanRequest {
+  customer_id: string;
+  new_plan_id: string;
+  policy_context: Record<string, unknown>;
+  policy_name?: string;
+  effective_date?: string | null;
+}
+
+export interface HandoffSummaryRequest {
+  conversation_id: string;
+  handoff_reason?: string | null;
+}
+
+export interface ContextCardRequest {
+  conversation_id: string;
+  handoff_reason?: string | null;
+}
+
+export interface OpeningLineRequest {
+  conversation_id?: string | null;
+  context_card?: Record<string, unknown> | null;
+  handoff_reason?: string | null;
+}
+
+export interface AuditLogRequest {
+  case_id: string;
+  customer_id: string;
+  session_id: string;
+  tools_called: unknown[];
+  evidence_used: unknown[];
+  action_taken: unknown[];
+  policy_dag_path: unknown[];
+  policy_name?: string | null;
+  ujcs?: number | null;
+  policy_status?: string | null;
+  health_score?: number | null;
+  handoff_required?: boolean;
+}

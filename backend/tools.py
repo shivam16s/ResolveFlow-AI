@@ -653,6 +653,7 @@ def retrieve_policy(
     query: str | None = None,
     policy_dir: Path = DEFAULT_POLICY_DIR,
     top_k: int = 3,
+    llm_client: Callable[[str], str] | None = None,
 ) -> dict | None:
     normalized_policy_name = policy_name.strip()
     if not normalized_policy_name:
@@ -668,12 +669,13 @@ def retrieve_policy(
     if not normalized_query:
         raise ValueError("query must not be empty when provided")
 
-    retrieve_decision = decide_policy_retrieval(normalized_query)
-    relevance = evaluate_policy_relevance(normalized_query, document.text)
+    retrieve_decision = decide_policy_retrieval(normalized_query, llm_client=llm_client)
+    relevance = evaluate_policy_relevance(normalized_query, document.text, llm_client=llm_client)
     evidence_strips = _top_policy_evidence_strips(
         query=normalized_query,
         document=document,
         top_k=top_k,
+        llm_client=llm_client,
     )
     return PolicyRetrievalResult(
         policy_name=normalized_policy_name,
@@ -2395,11 +2397,11 @@ def _find_policy_document(policy_name: str, *, policy_dir: Path) -> PolicyDocume
     return None
 
 
-def _top_policy_evidence_strips(*, query: str, document: PolicyDocument, top_k: int) -> list[dict]:
+def _top_policy_evidence_strips(*, query: str, document: PolicyDocument, top_k: int, llm_client: Callable[[str], str] | None = None) -> list[dict]:
     strips = decompose_policy_to_strips(document.text, source_id=document.policy_id)
     scored = []
     for strip in strips:
-        evaluation = evaluate_policy_relevance(query, strip.text)
+        evaluation = evaluate_policy_relevance(query, strip.text, llm_client=llm_client)
         scored.append(
             {
                 "strip_id": strip.strip_id,

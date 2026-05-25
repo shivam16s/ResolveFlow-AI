@@ -3,13 +3,28 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
+from contextlib import asynccontextmanager
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from backend.db.init_db import DEFAULT_DB_PATH
-from backend.agent.policy_store import DEFAULT_POLICY_DIR
+from backend.agent.policy_store import ChromaPolicyStore, DEFAULT_POLICY_DIR
 
 from .routes import dashboard_router, health_router, tools_router
+from .chat_routes import router as chat_router
+from .rag_routes import rag_router
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    store = ChromaPolicyStore()
+    app.state.policy_store = store
+    try:
+        store.ingest_policy_docs(policy_dir=app.state.policy_dir)
+        print("Policies ingested successfully.")
+    except Exception as e:
+        print(f"Policy ingestion failed: {e}")
+    yield
 
 
 API_TITLE = "ResolveFlow AI API"
@@ -29,6 +44,7 @@ def create_app(*, db_path: Path = DEFAULT_DB_PATH, policy_dir: Path = DEFAULT_PO
         title=API_TITLE,
         version=API_VERSION,
         description="Backend API scaffold for ResolveFlow AI tool-calling and dashboard endpoints.",
+        lifespan=lifespan,
     )
     app.add_middleware(
         CORSMiddleware,
@@ -47,6 +63,8 @@ def create_app(*, db_path: Path = DEFAULT_DB_PATH, policy_dir: Path = DEFAULT_PO
     app.include_router(health_router)
     app.include_router(dashboard_router)
     app.include_router(tools_router)
+    app.include_router(chat_router)
+    app.include_router(rag_router)
     return app
 
 

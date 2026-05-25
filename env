@@ -1,0 +1,3 @@
+# Local secrets. Fill these in on your machine; do not commit this file.
+GEMINI_API_KEY=AIzaSyAKXuLQBCun4TRCsGwQ7nuFf8h5nsKCsDU
+GEMINI_MODEL=gemini-2.5-flash

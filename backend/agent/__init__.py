@@ -1,6 +1,13 @@
 """Agent components for ResolveFlow."""
 
 from .acknowledgment import generate_acknowledgment
+from .action_replay import (
+    ActionCandidate,
+    ActionReplayDecision,
+    TakenAction,
+    confirm_action_replay,
+    load_taken_actions,
+)
 from .clarification import NEXT_ACTIONS, TOOL_BY_INTENT, NextActionDecision, decide_next_action
 from .guided_action import (
     ACTION_TO_TOOL_MAP,
@@ -151,6 +158,8 @@ from .slot_schema import (
 __all__ = [
     "IntentClassification",
     "IntentClassifier",
+    "ActionCandidate",
+    "ActionReplayDecision",
     "CASAEmpathySequence",
     "CASAEmpathyStep",
     "HealthScore",
@@ -177,6 +186,7 @@ __all__ = [
     "IntentSlotSchema",
     "MissingSlot",
     "TargetedQuestion",
+    "TakenAction",
     "NextActionDecision",
     "GuidedActionAuditEvent",
     "GuidedActionCoordinator",
@@ -247,6 +257,7 @@ __all__ = [
     "casa_empathy_sequence",
     "compute_health_score",
     "compute_relationship_score",
+    "confirm_action_replay",
     "get_recommended_action",
     "build_answer_support_usefulness_prompt",
     "build_crag_keyword_rewrite_prompt",
@@ -292,6 +303,7 @@ __all__ = [
     "initialize_memory_graph",
     "insert_human_handoff_queue",
     "llm_read_with_citation",
+    "load_taken_actions",
     "ppr_retrieve",
     "prioritize_slot",
     "resolve_action_tool",
