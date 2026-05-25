@@ -19,7 +19,7 @@ export default function RootLayout({
         <Sidebar />
         <TopBar />
         <main
-          className="ml-56 pt-14 min-h-screen"
+          className="ml-64 pt-14 min-h-screen"
           style={{ background: "var(--bg)" }}
         >
           {children}

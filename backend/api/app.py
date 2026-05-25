@@ -10,6 +10,7 @@ from backend.db.init_db import DEFAULT_DB_PATH
 from backend.agent.policy_store import DEFAULT_POLICY_DIR
 
 from .routes import dashboard_router, health_router, tools_router
+from .test_routes import router as test_router
 
 
 API_TITLE = "ResolveFlow AI API"
@@ -47,6 +48,7 @@ def create_app(*, db_path: Path = DEFAULT_DB_PATH, policy_dir: Path = DEFAULT_PO
     app.include_router(health_router)
     app.include_router(dashboard_router)
     app.include_router(tools_router)
+    app.include_router(test_router)
     return app
 
 

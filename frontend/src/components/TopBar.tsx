@@ -4,10 +4,18 @@ import { usePathname } from "next/navigation";
 import { Activity, Settings } from "lucide-react";
 
 const crumbs: Record<string, string> = {
+  "/project": "Project Overview",
+  "/workspace": "Team Dashboard",
+  "/setup": "Project Setup",
   "/overview": "Overview",
   "/cases": "Cases",
-  "/demo": "Demo Chat",
-  "/evaluation": "Evaluation",
+  "/demo": "Conversation UI",
+  "/actions": "Action Console",
+  "/audit": "Audit + Handoff",
+  "/evaluation": "Evaluator",
+  "/admin": "Test Harness",
+  "/submission": "Submission",
+  "/test": "Test Console",
 };
 
 export function TopBar() {
@@ -23,7 +31,7 @@ export function TopBar() {
 
   return (
     <header
-      className="fixed top-0 left-56 right-0 h-14 flex items-center px-6 z-20"
+      className="fixed top-0 left-64 right-0 h-14 flex items-center px-6 z-20"
       style={{
         background: "rgba(8,8,14,0.85)",
         backdropFilter: "blur(12px)",
