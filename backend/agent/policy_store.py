@@ -122,18 +122,22 @@ class ChromaPolicyStore:
             ids=ids,
         )
 
-    def query(self, query_text: str, top_k: int = 5) -> dict:
+    def query(self, query_text: str, top_k: int = 5, where: dict | None = None) -> dict:
         normalized = re.sub(r"\s+", " ", query_text.strip())
         if not normalized:
             raise ValueError("query_text must not be empty")
         if top_k < 1:
             raise ValueError("top_k must be at least 1")
 
-        return self.collection.query(
-            query_texts=[normalized],
-            n_results=min(top_k, max(self.collection.count(), 1)),
-            include=["documents", "metadatas", "distances"],
-        )
+        kwargs = {
+            "query_texts": [normalized],
+            "n_results": min(top_k, max(self.collection.count(), 1)),
+            "include": ["documents", "metadatas", "distances"],
+        }
+        if where:
+            kwargs["where"] = where
+
+        return self.collection.query(**kwargs)
 
 
 def load_policy_documents(policy_dir: Path = DEFAULT_POLICY_DIR) -> list[PolicyDocument]:

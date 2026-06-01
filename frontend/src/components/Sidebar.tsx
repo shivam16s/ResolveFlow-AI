@@ -40,6 +40,8 @@ const navGroups = [
     items: [
       { href: "/cases", label: "Cases", icon: FolderOpen },
       { href: "/audit", label: "Audit + Handoff", icon: Handshake },
+      { href: "/rag", label: "Knowledge Explorer", icon: BrainCircuit },
+      { href: "/tools", label: "Tools Explorer", icon: Wrench },
       { href: "/evaluation", label: "Evaluator", icon: FlaskConical },
       { href: "/admin", label: "Test Harness", icon: PlaySquare },
     ],

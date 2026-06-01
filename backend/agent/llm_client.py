@@ -41,7 +41,7 @@ class GeminiGenerateClient:
         self,
         prompt: str,
         *,
-        response_mime_type: str = "application/json",
+        response_mime_type: str = "text/plain",
         temperature: float = 0.0,
         max_output_tokens: int = 1024,
     ) -> str:
@@ -110,7 +110,7 @@ class LLMClient:
         self,
         prompt: str,
         *,
-        response_mime_type: str = "application/json",
+        response_mime_type: str = "text/plain",
         temperature: float = 0.0,
         max_output_tokens: int = 1024,
     ) -> str:

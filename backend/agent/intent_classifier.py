@@ -80,6 +80,8 @@ class IntentClassifier:
             "You are an intent detector for a telecom support agent.\n"
             "Given the customer message, extract ALL distinct issues.\n"
             f"Return a JSON object with intents from this allowed list only: {allowed}.\n"
+            "Only extract an intent if the customer is actively experiencing or requesting it. "
+            "If the customer explicitly denies an intent (e.g. 'I do not want to cancel'), do NOT include it.\n"
             "Use this exact schema:\n"
             "{\n"
             '  "intents": ["intent1", "intent2"],\n'
