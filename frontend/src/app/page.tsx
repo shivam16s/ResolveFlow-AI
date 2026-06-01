@@ -1,4 +1,5 @@
-import { redirect } from "next/navigation";
+import ResolveLandingPage from "@/components/ResolveLandingPage";
+
 export default function Home() {
-  redirect("/project");
+  return <ResolveLandingPage />;
 }

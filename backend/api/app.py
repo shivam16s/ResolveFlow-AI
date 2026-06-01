@@ -19,12 +19,13 @@ from .test_routes import router as test_router
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    store = ChromaPolicyStore()
-    app.state.policy_store = store
     try:
+        store = ChromaPolicyStore()
+        app.state.policy_store = store
         store.ingest_policy_docs(policy_dir=app.state.policy_dir)
         print("Policies ingested successfully.")
     except Exception as e:
+        app.state.policy_store = None
         print(f"Policy ingestion failed: {e}")
     yield
 

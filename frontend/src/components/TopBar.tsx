@@ -11,14 +11,13 @@ const crumbs: Record<string, string> = {
   "/setup": "Project Setup",
   "/overview": "Overview",
   "/cases": "Cases",
-  "/demo": "Conversation UI",
+  "/demo": "Conversation Cockpit",
   "/actions": "Action Console",
-  "/audit": "Audit + Handoff",
-  "/evaluation": "Evaluator",
+  "/audit": "Audit Trail",
+  "/evaluation": "Evaluation Lab",
   "/admin": "Test Harness",
-  "/submission": "Submission",
   "/test": "Test Console",
-  "/rag": "Knowledge Explorer",
+  "/rag": "Knowledge Base",
   "/tools": "Tools Explorer",
 };
 
@@ -41,8 +40,8 @@ export function TopBar() {
     <header
       className="fixed top-0 left-64 right-0 h-14 flex items-center px-6 z-20"
       style={{
-        background: "rgba(8,8,14,0.85)",
-        backdropFilter: "blur(12px)",
+        background: "rgba(12,12,12,0.80)",
+        backdropFilter: "blur(18px)",
         borderBottom: "1px solid var(--border)",
       }}
     >
@@ -74,7 +73,7 @@ export function TopBar() {
           className="flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-full"
           style={{
             background: isHealthy ? "rgba(16,185,129,0.08)" : "rgba(244,63,94,0.08)",
-            border: "1px solid var(--border-strong)",
+            border: isHealthy ? "1px solid rgba(164,244,253,0.22)" : "1px solid rgba(244,63,94,0.22)",
             color: isHealthy ? "#34d399" : "#fb7185",
           }}
         >

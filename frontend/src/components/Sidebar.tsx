@@ -3,49 +3,23 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import {
-  LayoutDashboard,
   FolderOpen,
   FlaskConical,
   BrainCircuit,
   MessageSquareText,
   ChevronRight,
-  ClipboardCheck,
   Handshake,
   Home,
-  PlaySquare,
-  Settings2,
-  Wrench,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 
-const navGroups = [
-  {
-    label: "Public",
-    items: [
-      { href: "/project", label: "Project Overview", icon: Home },
-      { href: "/submission", label: "Submission", icon: ClipboardCheck },
-    ],
-  },
-  {
-    label: "Workspace",
-    items: [
-      { href: "/workspace", label: "Team Dashboard", icon: LayoutDashboard },
-      { href: "/setup", label: "Project Setup", icon: Settings2 },
-      { href: "/demo", label: "Conversation UI", icon: MessageSquareText },
-      { href: "/actions", label: "Action Console", icon: Wrench },
-    ],
-  },
-  {
-    label: "Trust Layer",
-    items: [
-      { href: "/cases", label: "Cases", icon: FolderOpen },
-      { href: "/audit", label: "Audit + Handoff", icon: Handshake },
-      { href: "/rag", label: "Knowledge Explorer", icon: BrainCircuit },
-      { href: "/tools", label: "Tools Explorer", icon: Wrench },
-      { href: "/evaluation", label: "Evaluator", icon: FlaskConical },
-      { href: "/admin", label: "Test Harness", icon: PlaySquare },
-    ],
-  },
+const navItems = [
+  { href: "/project", label: "Project Overview", icon: Home },
+  { href: "/demo", label: "Conversation Cockpit", icon: MessageSquareText },
+  { href: "/cases", label: "Cases", icon: FolderOpen },
+  { href: "/audit", label: "Audit Trail", icon: Handshake },
+  { href: "/rag", label: "Knowledge Base", icon: BrainCircuit },
+  { href: "/evaluation", label: "Evaluation Lab", icon: FlaskConical },
 ];
 
 export function Sidebar() {
@@ -55,7 +29,8 @@ export function Sidebar() {
     <aside
       className="fixed left-0 top-0 h-full w-64 flex flex-col z-30"
       style={{
-        background: "var(--surface-1)",
+        background: "rgba(12,12,12,0.92)",
+        backdropFilter: "blur(18px)",
         borderRight: "1px solid var(--border)",
       }}
     >
@@ -67,8 +42,8 @@ export function Sidebar() {
         <div
           className="w-7 h-7 rounded-lg flex items-center justify-center"
           style={{
-            background: "var(--accent-dim)",
-            border: "1px solid var(--border-strong)",
+            background: "rgba(255,255,255,0.05)",
+            border: "1px solid var(--border)",
           }}
         >
           <BrainCircuit size={15} style={{ color: "var(--accent-hover)" }} />
@@ -104,48 +79,38 @@ export function Sidebar() {
       </div>
 
       {/* Nav */}
-      <nav className="flex-1 px-3 pt-2 space-y-4 overflow-y-auto">
-        {navGroups.map((group) => (
-          <div key={group.label}>
-            <p
-              className="px-3 mb-1.5 text-[10px] font-semibold uppercase tracking-widest"
-              style={{ color: "var(--text-muted)" }}
-            >
-              {group.label}
-            </p>
-            <div className="space-y-0.5">
-              {group.items.map(({ href, label, icon: Icon }) => {
-                const active = pathname === href || pathname.startsWith(href + "/");
-                return (
-                  <Link
-                    key={href}
-                    href={href}
-                    className={cn(
-                      "flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-all duration-150 group",
-                      active ? "text-indigo-300" : "hover:bg-white/4",
-                    )}
-                    style={
-                      active
-                        ? { background: "var(--accent-dim)", color: "#a5b4fc" }
-                        : { color: "var(--text-secondary)" }
-                    }
-                  >
-                    <Icon
-                      size={15}
-                      className={
-                        active
-                          ? "text-indigo-400"
-                          : "group-hover:text-indigo-400 transition-colors"
-                      }
-                    />
-                    <span className="flex-1">{label}</span>
-                    {active && <ChevronRight size={12} className="opacity-50" />}
-                  </Link>
-                );
-              })}
-            </div>
-          </div>
-        ))}
+      <nav className="flex-1 px-3 pt-4 overflow-y-auto">
+        <div className="space-y-1">
+          {navItems.map(({ href, label, icon: Icon }) => {
+            const active = pathname === href || pathname.startsWith(href + "/");
+            return (
+              <Link
+                key={href}
+                href={href}
+                className={cn(
+                  "flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-all duration-150 group",
+                  active ? "text-teal-100" : "hover:bg-white/4",
+                )}
+                style={
+                  active
+                    ? { background: "var(--accent-dim)", color: "#a4f4fd", border: "1px solid rgba(164,244,253,0.18)" }
+                    : { color: "var(--text-secondary)" }
+                }
+              >
+                <Icon
+                  size={15}
+                  className={
+                    active
+                      ? "text-teal-200"
+                      : "group-hover:text-teal-200 transition-colors"
+                  }
+                />
+                <span className="flex-1">{label}</span>
+                {active && <ChevronRight size={12} className="opacity-50" />}
+              </Link>
+            );
+          })}
+        </div>
       </nav>
 
       {/* Bottom version tag */}
