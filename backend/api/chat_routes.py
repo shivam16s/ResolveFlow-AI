@@ -80,18 +80,28 @@ def chat_message_stream(
         policy_results = []
         if policy_store is not None:
             try:
-                search_results = await asyncio.to_thread(policy_store.query, message, top_k=3)
+                # Query the vector DB semantically using the customer's message
+                # We fetch top 3 most relevant policy chunks across all documents
+                search_results = await asyncio.to_thread(
+                    policy_store.query, message, top_k=3
+                )
+                
+                # Extract unique policy IDs from the chunks
                 metadatas = search_results.get("metadatas", [[]])[0]
                 unique_policy_ids = list({meta["policy_id"]: meta for meta in metadatas if "policy_id" in meta}.values())
-
-                for meta in unique_policy_ids:
-                    policy = await asyncio.to_thread(
+                
+                # For each unique policy found, fully retrieve and evaluate it using rule-based CRAG for speed
+                async def _fetch_policy(meta):
+                    return await asyncio.to_thread(
                         retrieve_policy,
                         policy_name=meta["policy_id"],
                         query=message,
                         policy_dir=policy_dir,
-                        llm_client=llm,
+                        llm_client=None, # Use rule-based eval since Chroma already did semantic match
                     )
+                    
+                policies = await asyncio.gather(*[_fetch_policy(meta) for meta in unique_policy_ids])
+                for policy in policies:
                     if policy:
                         policy_results.append({
                             "policy_name": policy["policy_name"],

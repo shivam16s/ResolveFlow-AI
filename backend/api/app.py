@@ -14,7 +14,6 @@ from backend.agent.policy_store import ChromaPolicyStore, DEFAULT_POLICY_DIR
 from .routes import dashboard_router, health_router, tools_router
 from .chat_routes import router as chat_router
 from .rag_routes import rag_router
-from .test_routes import router as test_router
 
 
 def _expected_policy_chunks(policy_dir: Path) -> int:
@@ -100,7 +99,6 @@ def create_app(*, db_path: Path = DEFAULT_DB_PATH, policy_dir: Path = DEFAULT_PO
     app.include_router(tools_router)
     app.include_router(chat_router)
     app.include_router(rag_router)
-    app.include_router(test_router)
     return app
 
 
