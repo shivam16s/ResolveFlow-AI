@@ -27,7 +27,7 @@ export function Sidebar() {
 
   return (
     <aside
-      className="fixed left-0 top-0 h-full w-64 flex flex-col z-30"
+      className="fixed left-0 top-0 h-full w-64 flex-col z-30 hidden lg:flex"
       style={{
         background: "rgba(12,12,12,0.92)",
         backdropFilter: "blur(18px)",

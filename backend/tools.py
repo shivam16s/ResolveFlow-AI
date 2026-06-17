@@ -1,11 +1,28 @@
 from __future__ import annotations
 
+import os
 import sqlite3
 from dataclasses import asdict, dataclass
 from datetime import date, datetime, time, timedelta
 import json
 from pathlib import Path
 from uuid import uuid4
+
+# The seeded ConnectCare world is anchored in May 2026. Live tool calls that do
+# not pass an explicit ``reference_date`` must treat "now" as this demo anchor,
+# not the wall clock; otherwise the seeded duplicate charge, outage credit, and
+# invoice-window scenarios silently stop matching once real time drifts past the
+# seed dates. Override with the RESOLVEFLOW_NOW env var (ISO date) for real-clock
+# behavior. This mirrors the deterministic ``scenario_date`` used by the
+# evaluation harness.
+DEMO_REFERENCE_DATE = "2026-06-01"
+
+
+def _default_reference_date() -> str:
+    configured = os.environ.get("RESOLVEFLOW_NOW")
+    if configured and configured.strip():
+        return configured.strip()
+    return DEMO_REFERENCE_DATE
 
 from .agent.policy_graph import PolicyActionBlocked, PolicyGraphValidator, compute_ujcs, default_policy_dags
 from .agent.policy_retrieval import (
@@ -1676,7 +1693,7 @@ def generate_audit_log(
 
 def _reference_date_string(reference_date: date | str | None) -> str:
     if reference_date is None:
-        return date.today().isoformat()
+        return _default_reference_date()
     if isinstance(reference_date, date):
         return reference_date.isoformat()
     normalized = reference_date.strip()
@@ -2433,7 +2450,7 @@ def _technician_name_for(customer_id: str, time_slot: str) -> str:
 def _resolve_plan_effective_date(*, effective_date: date | str | None, effective_policy: str) -> str:
     if effective_date is not None:
         return _reference_date_string(effective_date)
-    today = date.today()
+    today = date.fromisoformat(_default_reference_date())
     if effective_policy == "next_billing_cycle":
         if today.month == 12:
             return date(today.year + 1, 1, 1).isoformat()

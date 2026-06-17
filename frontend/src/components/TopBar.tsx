@@ -38,7 +38,7 @@ export function TopBar() {
 
   return (
     <header
-      className="fixed top-0 left-64 right-0 h-14 flex items-center px-6 z-20"
+      className="fixed top-0 left-0 right-0 h-14 flex items-center px-4 z-20 lg:left-64 lg:px-6"
       style={{
         background: "rgba(12,12,12,0.80)",
         backdropFilter: "blur(18px)",

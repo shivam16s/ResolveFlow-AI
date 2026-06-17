@@ -17,7 +17,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       <Sidebar />
       <TopBar />
       <main
-        className="ml-64 pt-14 min-h-screen"
+        className="pt-14 min-h-screen lg:ml-64"
         style={{
           background:
             "radial-gradient(circle at 52% -10%, rgba(0,210,255,0.08), transparent 34%), linear-gradient(180deg, #0c0c0c 0%, #090909 100%)",

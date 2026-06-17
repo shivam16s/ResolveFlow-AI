@@ -188,7 +188,7 @@ export function LiveAgentConsole({
     ]);
 
     const params = new URLSearchParams({ customer_id: selected.customer_id, message: normalized });
-    const stream = new EventSource(`/api/test/chat/message/stream?${params.toString()}`);
+    const stream = new EventSource(`/api/chat/message/stream?${params.toString()}`);
     streamRef.current = stream;
 
     stream.onmessage = (event) => {
@@ -226,7 +226,7 @@ export function LiveAgentConsole({
         ...items,
         {
           role: "agent",
-          content: "The live test stream could not complete. Check that FastAPI is running on port 8000.",
+          content: "The live chat stream could not complete. Check that FastAPI is running on port 8000.",
           timestamp: new Date().toISOString(),
         },
       ]);
@@ -237,7 +237,7 @@ export function LiveAgentConsole({
   const runningStep = useMemo(() => steps.find((step) => step.status === "running"), [steps]);
 
   return (
-    <div className="p-6 max-w-[1800px]">
+    <div className="p-4 max-w-[1800px] lg:p-6">
       <div className="mb-5 flex items-start justify-between gap-4">
         <div>
           <h1 className="text-xl font-bold gradient-text">{title}</h1>
@@ -250,7 +250,7 @@ export function LiveAgentConsole({
         </div>
       </div>
 
-      <div className="grid grid-cols-1 xl:grid-cols-[280px_minmax(420px,1fr)_460px] gap-5">
+      <div className="grid grid-cols-1 gap-4 xl:grid-cols-[280px_minmax(420px,1fr)_460px] xl:gap-5">
         <aside className="glass p-4 h-fit">
           <p className="text-xs font-semibold uppercase tracking-widest mb-3" style={{ color: "var(--text-muted)" }}>Customer Selector</p>
           <div className="space-y-3">
@@ -283,7 +283,7 @@ export function LiveAgentConsole({
           </div>
         </aside>
 
-        <section className="glass min-h-[720px] flex flex-col overflow-hidden">
+        <section className="glass min-h-[620px] flex flex-col overflow-hidden xl:min-h-[720px]">
           <div className="px-5 py-4 border-b flex items-center gap-3" style={{ borderColor: "var(--border)" }}>
             <div className="w-10 h-10 rounded-full flex items-center justify-center" style={{ background: "rgba(20,184,166,0.12)", color: "#5eead4", border: "1px solid rgba(20,184,166,0.25)" }}>
               <User size={18} />
@@ -299,7 +299,7 @@ export function LiveAgentConsole({
               const customer = message.role === "customer";
               return (
                 <div key={`${message.timestamp}-${index}`} className={`flex ${customer ? "justify-end" : "justify-start"}`}>
-                  <div className={`flex gap-2 max-w-[82%] ${customer ? "flex-row-reverse" : ""}`}>
+                  <div className={`flex gap-2 max-w-[94%] sm:max-w-[82%] ${customer ? "flex-row-reverse" : ""}`}>
                     <span className="w-8 h-8 rounded-full flex items-center justify-center shrink-0" style={customer ? { background: "rgba(20,184,166,0.14)", color: "#5eead4" } : { background: "rgba(99,102,241,0.18)", color: "#a5b4fc" }}>
                       {customer ? <User size={14} /> : <Bot size={14} />}
                     </span>
@@ -446,8 +446,19 @@ function StepResult({ step }: { step: PipelineStep }) {
   }
   if (step.id === "memory") {
     const stable = arrayOfStrings(step.result.stable);
-    const episodic = Array.isArray(step.result.episodic) ? step.result.episodic.length : 0;
-    return <MiniList items={[...stable.slice(0, 2), `${episodic} prior session(s) found`]} />;
+    if (stable.length > 0 || Array.isArray(step.result.episodic)) {
+      const episodic = Array.isArray(step.result.episodic) ? step.result.episodic.length : 0;
+      return <MiniList items={[...stable.slice(0, 2), `${episodic} prior session(s) found`]} />;
+    }
+    return (
+      <MiniList
+        items={[
+          String(step.result.name ?? step.result.customer_name ?? "customer loaded"),
+          String(step.result.plan_name ?? step.result.plan ?? "account context"),
+          String(step.result.location ?? step.result.risk_level ?? ""),
+        ]}
+      />
+    );
   }
   if (step.id === "policy") {
     const policies = Array.isArray(step.result.policies) ? step.result.policies as Array<Record<string, unknown>> : [];
@@ -455,7 +466,7 @@ function StepResult({ step }: { step: PipelineStep }) {
   }
   if (step.id === "tools") {
     const tools = Array.isArray(step.result.tools) ? step.result.tools as Array<Record<string, unknown>> : [];
-    return <MiniList items={tools.map((tool) => `${tool.tool_name} · ${tool.summary}`)} />;
+    return <MiniList items={tools.map((tool) => `${tool.tool_name} · ${tool.summary ?? summarizeToolResult(tool.result)}`)} />;
   }
   if (step.id === "dag") {
     return <MiniList items={[String(step.result.dag_name ?? "policy DAG"), `UJCS ${Number(step.result.ujcs ?? 0).toFixed(2)} · ${String(step.result.policy_status ?? "pending").toUpperCase()}`, arrayOfStrings(step.result.path).join(" -> ")].filter(Boolean)} />;
@@ -479,4 +490,16 @@ function MiniList({ items }: { items: string[] }) {
 function arrayOfStrings(value: unknown): string[] {
   if (!Array.isArray(value)) return [];
   return value.map((item) => String(item));
+}
+
+function summarizeToolResult(value: unknown): string {
+  if (!value || typeof value !== "object") return "completed";
+  const result = value as Record<string, unknown>;
+  if (Array.isArray(result.invoices)) return `${result.invoices.length} invoices loaded`;
+  if (result.duplicate_confirmed) return `duplicate found INR ${String(result.duplicate_amount ?? "")}`.trim();
+  if (result.verified) return `verified outage ${String(result.duration_hours ?? "")} hrs`.trim();
+  if (result.recommendation) return String(result.recommendation);
+  if (result.mode === "already_taken") return "already taken";
+  if (result.mode === "eligible") return "eligible";
+  return "completed";
 }

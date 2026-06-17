@@ -17,16 +17,48 @@ from .rag_routes import rag_router
 from .test_routes import router as test_router
 
 
+def _expected_policy_chunks(policy_dir: Path) -> int:
+    try:
+        return sum(1 for _ in Path(policy_dir).glob("*.md"))
+    except OSError:
+        return 0
+
+
+def _safe_collection_count(store: ChromaPolicyStore | None) -> int:
+    if store is None:
+        return 0
+    try:
+        return store.collection.count()
+    except Exception:
+        return 0
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    store: ChromaPolicyStore | None = None
     try:
         store = ChromaPolicyStore()
         app.state.policy_store = store
-        store.ingest_policy_docs(policy_dir=app.state.policy_dir)
-        print("Policies ingested successfully.")
+        # Ingestion is an idempotent write. Skip it when the collection is
+        # already populated so a re-launch (or a second worker/process) does not
+        # contend for the Chroma SQLite write lock. On Windows that contention
+        # surfaces as "disk I/O error (code 2570)" and previously disabled policy
+        # retrieval for the whole server.
+        existing = _safe_collection_count(store)
+        if existing and existing >= _expected_policy_chunks(app.state.policy_dir):
+            print(f"Policies already ingested ({existing} chunks); skipping re-ingest.")
+        else:
+            summary = store.ingest_policy_docs(policy_dir=app.state.policy_dir)
+            print(f"Policies ingested successfully ({summary.chunk_count} chunks).")
     except Exception as e:
-        app.state.policy_store = None
-        print(f"Policy ingestion failed: {e}")
+        # If ingestion failed but a previously populated collection exists, keep
+        # serving from it rather than disabling policy retrieval entirely.
+        if _safe_collection_count(store) > 0:
+            app.state.policy_store = store
+            print(f"Policy ingestion skipped ({e}); using existing collection.")
+        else:
+            app.state.policy_store = None
+            print(f"Policy ingestion failed: {e}")
     yield
 
 
