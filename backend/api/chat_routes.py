@@ -189,6 +189,10 @@ def chat_message_stream(
         yield _event("response", "running")
         if backend_intent == "greeting" and chat_state.get("active_flow") == "cancellation":
             final_text = _active_flow_greeting_response(customer, chat_state)
+        elif backend_intent == "abort_cancellation":
+            _abort_cancellation(chat_state)
+            name = _first_name(customer)
+            final_text = f"Okay {name}, I have stopped the cancellation process. Your service will remain active. Let me know if there's anything else I can help with!"
         elif backend_intent == "cancellation_confirmation":
             final_text = _cancellation_confirmation_response(customer, tool_results)
         elif "cancellation_intent" in intents:
@@ -204,8 +208,16 @@ def chat_message_stream(
                 # instead of re-deriving the same evidence.
                 final_text = _already_addressed_response(customer, intents, emotion, tool_results)
             else:
+                history_text = ""
+                if chat_state.get("history"):
+                    history_text = "Recent Conversation History:\n"
+                    for turn in chat_state["history"][-6:]:
+                        history_text += f"{turn['role'].capitalize()}: {turn['content']}\n"
+                    history_text += "\n"
+
                 prompt = (
                     f"You are a helpful telecom support agent.\n"
+                    f"{history_text}"
                     f"Customer Message: '{message}'\n"
                     f"Customer Context: {customer}\n"
                     f"Tool Results: {tool_results}\n"
@@ -231,6 +243,12 @@ def chat_message_stream(
                     final_text = _evidence_response(customer, intents, emotion, tool_results)
 
             _remember_findings(chat_state, current_findings)
+
+        # Update chat history
+        chat_history = chat_state.setdefault("history", [])
+        chat_history.append({"role": "user", "content": message})
+        chat_history.append({"role": "assistant", "content": final_text})
+        chat_state["history"] = chat_history[-10:]
 
         # Persist the updated session so multi-turn context survives a restart.
         _save_session_state(customer_id, chat_state, db_path)
@@ -325,6 +343,7 @@ def _state_for(customer_id: str) -> dict[str, Any]:
             # state when something has already been handled.
             "turn_count": 0,
             "presented_findings": [],
+            "history": [],
         },
     )
 
@@ -414,8 +433,18 @@ def _normalize_chat_intent(message: str, state: dict[str, Any]) -> str | None:
     text = " ".join(message.strip().lower().split())
     if text in {"hi", "hii", "hello", "hey"}:
         return "greeting"
-    cancel_confirmations = {"cancel", "cancel now", "proceed", "yes cancel", "continue cancellation"}
-    cancel_terms = ("cancel", "cancellation", "disconnect", "stop my subscription", "stop service", "close my account")
+
+    abort_terms = {
+        "stop cancel", "stop cacel", "stop cancle", "stop cancellation",
+        "abort cancel", "abort cacel", "abort cancle", "abort cancellation",
+        "don't cancel", "don't cacel", "don't cancle", "do not cancel",
+        "nevermind", "keep my subscription", "keep my service", "no cancel"
+    }
+    if any(term in text for term in abort_terms):
+        return "abort_cancellation"
+
+    cancel_confirmations = {"cancel", "cancel now", "proceed", "yes cancel", "continue cancellation", "cacel", "cancle"}
+    cancel_terms = ("cancel", "cancellation", "disconnect", "stop my subscription", "stop service", "close my account", "cacel", "cancle")
     is_cancel_message = any(term in text for term in cancel_terms) or text in cancel_confirmations
     # A cancellation request was already created this session: re-raising it
     # should confirm it is already done, not restart the options flow.
@@ -453,6 +482,16 @@ def _mark_cancellation_pending(state: dict[str, Any], intents: list[str], pendin
             "cancellation_notice_shown": True,
         }
     )
+
+
+def _abort_cancellation(state: dict[str, Any]) -> None:
+    state.update({
+        "active_flow": "none",
+        "pending_customer_choice": None,
+        "cancellation_request": None,
+        "last_confirmed_intent": None,
+        "last_bot_offer": [],
+    })
 
 
 def _mark_cancellation_completed(state: dict[str, Any], cancellation_request: dict[str, Any]) -> None:
@@ -901,8 +940,9 @@ def _response_misses_evidence(text: str, tools: list[dict[str, Any]]) -> bool:
     if isinstance(outage, dict) and outage.get("verified"):
         if not any(term in lowered for term in ("outage", "chennai", "7 hour", "7-hour", "service issue")):
             return True
-    stripped = text.strip()
-    if stripped and stripped[-1] not in ".!?":
+    
+    # Ensure the response is at least a minimum length to be considered valid
+    if len(text.strip()) < 5:
         return True
     return False
 

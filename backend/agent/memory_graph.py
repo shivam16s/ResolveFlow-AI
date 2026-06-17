@@ -407,7 +407,7 @@ def _upsert_node(
         )
         return
 
-    passages = _append_unique(_loads_json_list(existing[0]), memory_id)
+    passages = _append_unique(_loads_json_list(existing[0]), memory_id)[-50:]
     stored_type = _more_specific_node_type(existing[2], node_type)
     stored_label = existing[3] or label
     connection.execute(
@@ -483,7 +483,7 @@ def _upsert_edge_values(
         existing_passages = _loads_json_list(edge.get("passages", []))
         for passage in clean_passages:
             existing_passages = _append_unique(existing_passages, passage)
-        edge["passages"] = existing_passages
+        edge["passages"] = existing_passages[-50:]
 
         existing_evidence = _loads_json_list(edge.get("evidence", []))
         for evidence in clean_evidence:

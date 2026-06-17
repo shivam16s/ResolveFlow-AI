@@ -93,11 +93,11 @@ function MemorySearchTab() {
             value={customerId}
             onChange={(e) => setCustomerId(e.target.value)}
             className="w-full px-3 py-2 text-sm rounded-lg outline-none transition-all focus:ring-1"
-            style={{ background: "var(--surface-3)", border: "1px solid var(--border)", color: "var(--text-primary)", "--tw-ring-color": "var(--accent)" } as React.CSSProperties}
+            style={{ colorScheme: "dark", background: "var(--surface-3)", border: "1px solid var(--border)", color: "var(--text-primary)", "--tw-ring-color": "var(--accent)" } as React.CSSProperties}
           >
-            <option value="">Select a customer...</option>
+            <option value="" className="bg-[#111113] text-white">Select a customer...</option>
             {customers.map(c => (
-              <option key={c.customer_id} value={c.customer_id}>{c.name} ({c.customer_id})</option>
+              <option key={c.customer_id} value={c.customer_id} className="bg-[#111113] text-white">{c.name} ({c.customer_id})</option>
             ))}
           </select>
         </div>
@@ -200,10 +200,10 @@ function PolicyRetrievalTab() {
             value={policyName}
             onChange={(e) => setPolicyName(e.target.value)}
             className="w-full px-3 py-2 text-sm rounded-lg outline-none transition-all focus:ring-1"
-            style={{ background: "var(--surface-3)", border: "1px solid var(--border)", color: "var(--text-primary)", "--tw-ring-color": "var(--accent)" } as React.CSSProperties}
+            style={{ colorScheme: "dark", background: "var(--surface-3)", border: "1px solid var(--border)", color: "var(--text-primary)", "--tw-ring-color": "var(--accent)" } as React.CSSProperties}
           >
             {POLICIES.map(p => (
-              <option key={p} value={p}>{p.replace("_policy", "").replace(/_/g, " ")}</option>
+              <option key={p} value={p} className="bg-[#111113] text-white">{p.replace("_policy", "").replace(/_/g, " ")}</option>
             ))}
           </select>
         </div>
@@ -288,11 +288,11 @@ function MemoryGraphTab() {
             value={customerId}
             onChange={(e) => setCustomerId(e.target.value)}
             className="w-full px-3 py-2 text-sm rounded-lg outline-none transition-all focus:ring-1"
-            style={{ background: "var(--surface-3)", border: "1px solid var(--border)", color: "var(--text-primary)", "--tw-ring-color": "var(--accent)" } as React.CSSProperties}
+            style={{ colorScheme: "dark", background: "var(--surface-3)", border: "1px solid var(--border)", color: "var(--text-primary)", "--tw-ring-color": "var(--accent)" } as React.CSSProperties}
           >
-            <option value="">Select a customer...</option>
+            <option value="" className="bg-[#111113] text-white">Select a customer...</option>
             {customers.map(c => (
-              <option key={c.customer_id} value={c.customer_id}>{c.name} ({c.customer_id})</option>
+              <option key={c.customer_id} value={c.customer_id} className="bg-[#111113] text-white">{c.name} ({c.customer_id})</option>
             ))}
           </select>
         </div>

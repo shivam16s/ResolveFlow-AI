@@ -76,12 +76,12 @@ class ChromaPolicyStore:
         self,
         policy_dir: Path = DEFAULT_POLICY_DIR,
         *,
-        expected_count: int = 8,
+        expected_count: int | None = None,
         max_tokens: int = 300,
         overlap_tokens: int = 50,
     ) -> PolicyIngestionSummary:
         documents = load_policy_documents(policy_dir)
-        if len(documents) != expected_count:
+        if expected_count is not None and len(documents) != expected_count:
             raise ValueError(f"expected {expected_count} policy docs, found {len(documents)} in {policy_dir}")
 
         chunks = [
@@ -194,7 +194,7 @@ def chunk_policy_document(
             chunk_index=index,
             chunk_count=chunk_count,
             token_count=len(window_tokens),
-            text=" ".join(window_tokens),
+            text=f"# {document.title}\n" + " ".join(window_tokens),
         )
         for index, window_tokens in enumerate(windows)
     ]

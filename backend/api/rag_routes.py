@@ -72,38 +72,28 @@ def policy_retrieve(payload: PolicyRetrieveRequest, request: Request) -> JSONRes
 @rag_router.get("/memory/graph/{customer_id}")
 def memory_graph(customer_id: str, request: Request) -> JSONResponse:
     try:
-        # We need a function to fetch graph nodes and edges for a customer.
-        # Let's read from the DB.
+        from backend.agent.memory_graph import list_memory_graph_nodes
         db_path = request.app.state.db_path
         with sqlite3.connect(db_path) as conn:
-            conn.row_factory = sqlite3.Row
-            nodes_rows = conn.execute(
-                "SELECT node_id, label, node_type, supporting_passages FROM memory_nodes WHERE customer_id = ?",
-                (customer_id,)
-            ).fetchall()
-
-            edges_rows = conn.execute(
-                "SELECT source, target, relation, weight FROM memory_edges WHERE customer_id = ?",
-                (customer_id,)
-            ).fetchall()
-
+            graph_nodes = list_memory_graph_nodes(conn, customer_id)
+            
             nodes = []
-            for row in nodes_rows:
-                nodes.append({
-                    "node_id": row["node_id"],
-                    "label": row["label"],
-                    "node_type": row["node_type"],
-                    "supporting_passages": _loads_json(row["supporting_passages"])
-                })
-
             edges = []
-            for row in edges_rows:
-                edges.append({
-                    "source": row["source"],
-                    "target": row["target"],
-                    "relation": row["relation"],
-                    "weight": row["weight"]
+            for node in graph_nodes:
+                nodes.append({
+                    "node_id": node["node_id"],
+                    "label": node["label"],
+                    "node_type": node["node_type"],
+                    "supporting_passages": node["passages"]
                 })
+                
+                for edge in node["edges"]:
+                    edges.append({
+                        "source": node["node_id"],
+                        "target": edge.get("target_node"),
+                        "relation": edge.get("relation"),
+                        "weight": edge.get("weight")
+                    })
 
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc

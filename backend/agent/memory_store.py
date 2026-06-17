@@ -118,9 +118,13 @@ class ChromaMemoryStore:
         if top_k < 1:
             raise ValueError("top_k must be at least 1")
 
+        normalized_query = re.sub(r"\s+", " ", query_text.strip())
+        if not normalized_query:
+            return []
+
         where = _where_filter(customer_id=customer_id, memory_type=memory_type)
         vector_results = self.collection.query(
-            query_texts=[query_text],
+            query_texts=[normalized_query],
             n_results=min(max(top_k * 3, top_k), max(self.collection.count(), 1)),
             where=where,
             include=["documents", "metadatas", "distances"],
@@ -128,7 +132,7 @@ class ChromaMemoryStore:
         vector_rankings = _vector_rankings(vector_results)
 
         corpus = self.collection.get(where=where, include=["documents", "metadatas"])
-        bm25_rankings = _bm25_rankings(query_text=query_text, corpus=corpus)
+        bm25_rankings = _bm25_rankings(query_text=normalized_query, corpus=corpus)
 
         fused_ids = set(vector_rankings) | set(bm25_rankings)
         fused_results = []
