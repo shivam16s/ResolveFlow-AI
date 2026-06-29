@@ -3,8 +3,6 @@ from __future__ import annotations
 import json
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Any
-
 from .runner import run_evaluation
 from .scenarios import DEFAULT_EVALUATION_SCENARIOS_PATH, EvaluationScenario, load_evaluation_scenarios
 
@@ -67,7 +65,8 @@ def generate_metric_report(
     db_path: Path | None = None,
 ) -> dict:
     if evaluation_result is None:
-        evaluation_result = run_evaluation(k=k, scenarios_path=scenarios_path, db_path=db_path)
+        evaluation_result = run_evaluation(
+            k=k, scenarios_path=scenarios_path, db_path=db_path)
     if not isinstance(evaluation_result, dict):
         raise ValueError("evaluation_result must be a dict when provided")
 
@@ -76,7 +75,8 @@ def generate_metric_report(
     results = _result_items(evaluation_result)
     total_runs = len(results)
     pass_k = int(evaluation_result.get("pass_k", k))
-    scenario_count = int(evaluation_result.get("scenario_count", len(scenarios)))
+    scenario_count = int(evaluation_result.get(
+        "scenario_count", len(scenarios)))
 
     metrics = _compute_metrics(results, scenario_by_id)
     report = EvaluationMetricReport(
@@ -120,7 +120,8 @@ def _compute_metrics(results: list[dict], scenario_by_id: dict[str, EvaluationSc
         required_tool_total += len(required_tools)
         required_tool_hit += sum(1 for tool in required_tools if tool in tools_called)
         forbidden_tool_total += len(forbidden_tools)
-        forbidden_tool_clean += sum(1 for tool in forbidden_tools if tool not in tools_called)
+        forbidden_tool_clean += sum(
+            1 for tool in forbidden_tools if tool not in tools_called)
         policy_total += len(required_policies)
         policy_hit += sum(1 for policy in required_policies if policy in policies_retrieved)
         hallucination_count += len(result.get("forbidden_tools_called", []))
@@ -258,7 +259,8 @@ def _result_items(evaluation_result: dict) -> list[dict]:
 def _scenario_for_result(result: dict, scenario_by_id: dict[str, EvaluationScenario]) -> EvaluationScenario:
     scenario_id = str(result.get("scenario_id", "")).strip()
     if scenario_id not in scenario_by_id:
-        raise ValueError(f"unknown scenario_id in evaluation result: {scenario_id!r}")
+        raise ValueError(
+            f"unknown scenario_id in evaluation result: {scenario_id!r}")
     return scenario_by_id[scenario_id]
 
 
@@ -274,7 +276,8 @@ def _expected_escalation(scenario: EvaluationScenario) -> bool | None:
 def _observed_escalation(result: dict) -> bool:
     tools = set(result.get("tools_called", []))
     artifacts = result.get("artifacts", {})
-    expected_handoff = _nested_get(artifacts, "tool_results", "generate_handoff_summary")
+    expected_handoff = _nested_get(
+        artifacts, "tool_results", "generate_handoff_summary")
     return "generate_handoff_summary" in tools or bool(expected_handoff)
 
 
@@ -299,7 +302,8 @@ def _abstention_violated(result: dict, scenario: EvaluationScenario) -> bool:
     expected = scenario.goal_state.get("expected_artifacts", {})
     if not expected.get("must_abstain_from_outage_claim"):
         return False
-    outage_result = _nested_get(result.get("artifacts", {}), "tool_results", "check_outage_status")
+    outage_result = _nested_get(result.get(
+        "artifacts", {}), "tool_results", "check_outage_status")
     if isinstance(outage_result, dict) and outage_result.get("ok") is False:
         return False
     return True

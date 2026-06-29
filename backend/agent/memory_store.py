@@ -61,7 +61,8 @@ class ChromaMemoryStore:
 
         timestamp = (created_at or datetime.now(timezone.utc)).isoformat()
         ids = [
-            _memory_id(customer_id=customer_id, session_id=session_id, unit=unit)
+            _memory_id(customer_id=customer_id,
+                       session_id=session_id, unit=unit)
             for unit in units
         ]
         documents = [unit.content for unit in units]
@@ -81,7 +82,8 @@ class ChromaMemoryStore:
         ]
 
         # ChromaDB embeds documents here using the collection embedding function.
-        self.collection.upsert(ids=ids, documents=documents, metadatas=metadatas)
+        self.collection.upsert(
+            ids=ids, documents=documents, metadatas=metadatas)
         return ids
 
     def query(
@@ -125,14 +127,17 @@ class ChromaMemoryStore:
         where = _where_filter(customer_id=customer_id, memory_type=memory_type)
         vector_results = self.collection.query(
             query_texts=[normalized_query],
-            n_results=min(max(top_k * 3, top_k), max(self.collection.count(), 1)),
+            n_results=min(max(top_k * 3, top_k),
+                          max(self.collection.count(), 1)),
             where=where,
             include=["documents", "metadatas", "distances"],
         )
         vector_rankings = _vector_rankings(vector_results)
 
-        corpus = self.collection.get(where=where, include=["documents", "metadatas"])
-        bm25_rankings = _bm25_rankings(query_text=normalized_query, corpus=corpus)
+        corpus = self.collection.get(
+            where=where, include=["documents", "metadatas"])
+        bm25_rankings = _bm25_rankings(
+            query_text=normalized_query, corpus=corpus)
 
         fused_ids = set(vector_rankings) | set(bm25_rankings)
         fused_results = []
@@ -303,8 +308,10 @@ def _bm25_score(
         if term_frequency == 0:
             continue
         doc_frequency = document_frequencies.get(term, 0)
-        idf = math.log(1 + ((doc_count - doc_frequency + 0.5) / (doc_frequency + 0.5)))
-        denominator = term_frequency + k1 * (1 - b + b * (doc_len / max(avg_doc_len, 1e-9)))
+        idf = math.log(
+            1 + ((doc_count - doc_frequency + 0.5) / (doc_frequency + 0.5)))
+        denominator = term_frequency + k1 * \
+            (1 - b + b * (doc_len / max(avg_doc_len, 1e-9)))
         score += idf * ((term_frequency * (k1 + 1)) / denominator)
     return score
 

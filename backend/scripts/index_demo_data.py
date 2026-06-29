@@ -7,11 +7,13 @@ from pathlib import Path
 from backend.db.init_db import DEFAULT_DB_PATH
 from backend.agent.memory_manager import MemoryManager
 
+
 def index_all(db_path: Path):
     manager = MemoryManager(db_path=db_path)
     with sqlite3.connect(db_path) as conn:
         conn.row_factory = sqlite3.Row
-        cursor = conn.execute("SELECT session_id, customer_id, messages, final_status FROM conversations")
+        cursor = conn.execute(
+            "SELECT session_id, customer_id, messages, final_status FROM conversations")
         rows = cursor.fetchall()
 
     if not rows:
@@ -29,7 +31,8 @@ def index_all(db_path: Path):
         except Exception:
             continue
 
-        print(f"[{idx}/{len(rows)}] Indexing session {session_id} for {customer_id}...")
+        print(
+            f"[{idx}/{len(rows)}] Indexing session {session_id} for {customer_id}...")
         try:
             summary = manager.index_session(
                 session_transcript=messages,
@@ -38,9 +41,11 @@ def index_all(db_path: Path):
                 final_status=final_status,
                 close_session=False,
             )
-            print(f"  -> Indexed {summary.units_indexed} units, {summary.triples_indexed} triples.")
+            print(
+                f"  -> Indexed {summary.units_indexed} units, {summary.triples_indexed} triples.")
         except Exception as e:
             print(f"  -> Error: {e}")
+
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()

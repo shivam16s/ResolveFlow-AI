@@ -84,11 +84,13 @@ class MemoryManager:
         graph_connection: sqlite3.Connection | None = None,
         db_path: Path = DEFAULT_DB_PATH,
         llm_client: Callable[[str], str] | None = None,
-        synonymy_embedding_function: Callable[[list[str]], list[list[float]]] | None = None,
+        synonymy_embedding_function: Callable[[
+            list[str]], list[list[float]]] | None = None,
         synonymy_threshold: float = 0.8,
     ) -> None:
         self.vector_store = vector_store or ChromaMemoryStore()
-        self.graph_connection = graph_connection or _connect_graph_database(db_path)
+        self.graph_connection = graph_connection or _connect_graph_database(
+            db_path)
         self.llm_client = llm_client
         self.synonymy_embedding_function = synonymy_embedding_function
         self.synonymy_threshold = synonymy_threshold
@@ -115,7 +117,8 @@ class MemoryManager:
         self._persist_relationship_start(customer_id, session_id)
         units = decompose_to_memory_units(session_transcript)
         if not units:
-            session_closed = self._mark_session_closed(customer_id, session_id, final_status) if close_session else False
+            session_closed = self._mark_session_closed(
+                customer_id, session_id, final_status) if close_session else False
             return MemoryIndexSummary(
                 customer_id=customer_id,
                 session_id=session_id,
@@ -134,7 +137,8 @@ class MemoryManager:
             session_id=session_id,
         )
         if len(memory_ids) != len(units):
-            raise ValueError("vector_store.store_units must return one memory_id per memory unit")
+            raise ValueError(
+                "vector_store.store_units must return one memory_id per memory unit")
 
         triples_indexed = 0
         graph_nodes_upserted = 0
@@ -152,7 +156,8 @@ class MemoryManager:
             graph_edges_upserted += graph_update.edges_upserted
 
         synonymy_update = self._add_synonymy_edges(customer_id)
-        session_closed = self._mark_session_closed(customer_id, session_id, final_status) if close_session else False
+        session_closed = self._mark_session_closed(
+            customer_id, session_id, final_status) if close_session else False
 
         return MemoryIndexSummary(
             customer_id=customer_id,
@@ -201,7 +206,8 @@ class MemoryManager:
         return _merge_memory_results(
             vector_results=vector_results,
             graph_results=graph_results,
-            documents_by_id=self._documents_for_graph_results(vector_results, graph_results),
+            documents_by_id=self._documents_for_graph_results(
+                vector_results, graph_results),
             top_k=top_k,
         )
 
@@ -249,7 +255,8 @@ class MemoryManager:
 
         completed_at = datetime.now(timezone.utc).isoformat()
         start_score = self._relationship_score_start(customer_id, session_id)
-        end_score = self._relationship_score_end(customer_id, session_id, start_score)
+        end_score = self._relationship_score_end(
+            customer_id, session_id, start_score)
         relationship_delta = round(end_score - start_score, 2)
         with self.graph_connection:
             cursor = self.graph_connection.execute(
@@ -322,11 +329,13 @@ class MemoryManager:
         return compute_relationship_score(self._past_session_scores(customer_id, exclude_session_id=session_id)).score
 
     def _relationship_score_end(self, customer_id: str, session_id: str, start_score: float) -> float:
-        current_score = self._current_session_health_score(customer_id, session_id)
+        current_score = self._current_session_health_score(
+            customer_id, session_id)
         if current_score is None:
             return start_score
         return compute_relationship_score(
-            self._past_session_scores(customer_id, exclude_session_id=session_id) + [current_score]
+            self._past_session_scores(
+                customer_id, exclude_session_id=session_id) + [current_score]
         ).score
 
     def _past_session_scores(self, customer_id: str, *, exclude_session_id: str) -> list[float]:
@@ -427,7 +436,8 @@ def _latest_health_score(raw_health_scores) -> float | None:
     if raw_health_scores is None:
         return None
     try:
-        values = json.loads(raw_health_scores) if isinstance(raw_health_scores, str) else raw_health_scores
+        values = json.loads(raw_health_scores) if isinstance(
+            raw_health_scores, str) else raw_health_scores
     except json.JSONDecodeError:
         return None
     if not isinstance(values, list):
@@ -457,8 +467,10 @@ def _merge_memory_results(
 ) -> list[MergedMemoryResult]:
     vector_by_id = {result.memory_id: result for result in vector_results}
     graph_by_id = {result.memory_id: result for result in graph_results}
-    vector_ranks = {result.memory_id: index + 1 for index, result in enumerate(vector_results)}
-    graph_ranks = {result.memory_id: index + 1 for index, result in enumerate(graph_results)}
+    vector_ranks = {result.memory_id: index +
+                    1 for index, result in enumerate(vector_results)}
+    graph_ranks = {result.memory_id: index +
+                   1 for index, result in enumerate(graph_results)}
     memory_ids = set(vector_by_id) | set(graph_by_id)
 
     merged = []

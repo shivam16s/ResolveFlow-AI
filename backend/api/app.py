@@ -45,16 +45,19 @@ async def lifespan(app: FastAPI):
         # retrieval for the whole server.
         existing = _safe_collection_count(store)
         if existing and existing >= _expected_policy_chunks(app.state.policy_dir):
-            print(f"Policies already ingested ({existing} chunks); skipping re-ingest.")
+            print(
+                f"Policies already ingested ({existing} chunks); skipping re-ingest.")
         else:
             summary = store.ingest_policy_docs(policy_dir=app.state.policy_dir)
-            print(f"Policies ingested successfully ({summary.chunk_count} chunks).")
+            print(
+                f"Policies ingested successfully ({summary.chunk_count} chunks).")
     except Exception as e:
         # If ingestion failed but a previously populated collection exists, keep
         # serving from it rather than disabling policy retrieval entirely.
         if _safe_collection_count(store) > 0:
             app.state.policy_store = store
-            print(f"Policy ingestion skipped ({e}); using existing collection.")
+            print(
+                f"Policy ingestion skipped ({e}); using existing collection.")
         else:
             app.state.policy_store = None
             print(f"Policy ingestion failed: {e}")

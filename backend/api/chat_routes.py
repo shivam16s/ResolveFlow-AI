@@ -33,9 +33,11 @@ router = APIRouter(prefix="/api/chat", tags=["chat"])
 _CHAT_STATES: dict[str, dict[str, Any]] = {}
 _MEMORY_CANCELLATION_REQUESTS: dict[str, dict[str, Any]] = {}
 
+
 def _event(step: str, status: str, result: dict[str, Any] | None = None) -> str:
     payload = {"step": step, "status": status, "result": result or {}}
     return f"data: {json.dumps(payload, ensure_ascii=True)}\n\n"
+
 
 @router.get("/message/stream")
 def chat_message_stream(
@@ -46,83 +48,102 @@ def chat_message_stream(
     async def generate():
         db_path = Path(request.app.state.db_path)
         policy_dir = Path(request.app.state.policy_dir)
-        policy_store: ChromaPolicyStore | None = getattr(request.app.state, "policy_store", None)
+        policy_store: ChromaPolicyStore | None = getattr(
+            request.app.state, "policy_store", None)
 
         llm = _safe_llm_client()
         chat_state = _load_session_state(customer_id, db_path)
         chat_state["turn_count"] = int(chat_state.get("turn_count", 0)) + 1
         backend_intent = _normalize_chat_intent(message, chat_state)
 
-        # 1. Intent
-        yield _event("intent", "running")
-        classification = await asyncio.to_thread(_classify_message, message, llm)
-        emotion = _effective_emotion(message, classification.emotion)
-        issue_queue = build_issue_queue(classification)
-        intents = [issue.intent for issue in issue_queue]
-        if backend_intent in {"cancellation_request", "cancellation_confirmation"} and "cancellation_intent" not in intents:
-            intents.append("cancellation_intent")
+        queue = asyncio.Queue()
 
-        yield _event("intent", "done", {
-            "intents": intents,
-            "latest_intent": backend_intent or classification.primary_intent,
-            "emotion": emotion,
-            "confidence": classification.intent_confidence,
-            "queue": intents,
-        })
+        async def _run_intent():
+            await queue.put(_event("intent", "running"))
+            classification = await asyncio.to_thread(_classify_message, message, llm)
+            emotion = _effective_emotion(message, classification.emotion)
+            issue_queue = build_issue_queue(classification)
+            res_intents = [issue.intent for issue in issue_queue]
+            if backend_intent in {"cancellation_request", "cancellation_confirmation"} and "cancellation_intent" not in res_intents:
+                res_intents.append("cancellation_intent")
 
-        # 2. Memory (Customer Context)
-        yield _event("memory", "running")
-        customer = await asyncio.to_thread(lookup_customer, customer_id, db_path=db_path)
-        yield _event("memory", "done", customer or {})
+            payload = {
+                "intents": res_intents,
+                "latest_intent": backend_intent or classification.primary_intent,
+                "emotion": emotion,
+                "confidence": classification.intent_confidence,
+                "queue": res_intents,
+            }
+            await queue.put(_event("intent", "done", payload))
+            return res_intents, emotion, issue_queue
 
-        # 3. Policy (True Semantic RAG)
-        yield _event("policy", "running")
-        policy_results = []
-        if policy_store is not None:
-            try:
-                # Query the vector DB semantically using the customer's message
-                # We fetch top 3 most relevant policy chunks across all documents
-                search_results = await asyncio.to_thread(
-                    policy_store.query, message, top_k=3
-                )
-                
-                # Extract unique policy IDs from the chunks
-                metadatas = search_results.get("metadatas", [[]])[0]
-                unique_policy_ids = list({meta["policy_id"]: meta for meta in metadatas if "policy_id" in meta}.values())
-                
-                # For each unique policy found, fully retrieve and evaluate it using rule-based CRAG for speed
-                async def _fetch_policy(meta):
-                    return await asyncio.to_thread(
-                        retrieve_policy,
-                        policy_name=meta["policy_id"],
-                        query=message,
-                        policy_dir=policy_dir,
-                        llm_client=None, # Use rule-based eval since Chroma already did semantic match
+        async def _run_memory():
+            await queue.put(_event("memory", "running"))
+            res_customer = await asyncio.to_thread(lookup_customer, customer_id, db_path=db_path)
+            await queue.put(_event("memory", "done", res_customer or {}))
+            return res_customer
+
+        async def _run_policy():
+            await queue.put(_event("policy", "running"))
+            res_policy_results = []
+            if policy_store is not None:
+                try:
+                    search_results = await asyncio.to_thread(
+                        policy_store.query, message, top_k=3
                     )
-                    
-                policies = await asyncio.gather(*[_fetch_policy(meta) for meta in unique_policy_ids])
-                for policy in policies:
-                    if policy:
-                        policy_results.append({
-                            "policy_name": policy["policy_name"],
-                            "policy_id": policy["policy_id"],
-                            "confidence": policy["relevance"]["score"],
-                            "crag_path": policy["relevance"]["route"].upper(),
-                        })
-            except Exception:
-                policy_results = []
-        yield _event("policy", "done", {"policies": policy_results})
+                    metadatas = search_results.get("metadatas", [[]])[0]
+                    unique_policy_ids = list(
+                        {meta["policy_id"]: meta for meta in metadatas if "policy_id" in meta}.values())
+
+                    async def _fetch_policy(meta):
+                        return await asyncio.to_thread(
+                            retrieve_policy,
+                            policy_name=meta["policy_id"],
+                            query=message,
+                            policy_dir=policy_dir,
+                            llm_client=None,
+                        )
+
+                    policies = await asyncio.gather(*[_fetch_policy(meta) for meta in unique_policy_ids])
+                    for policy in policies:
+                        if policy:
+                            res_policy_results.append({
+                                "policy_name": policy["policy_name"],
+                                "policy_id": policy["policy_id"],
+                                "confidence": policy["relevance"]["score"],
+                                "crag_path": policy["relevance"]["route"].upper(),
+                            })
+                except Exception:
+                    res_policy_results = []
+            await queue.put(_event("policy", "done", {"policies": res_policy_results}))
+            return res_policy_results
+
+        # Start background tasks
+        intent_task = asyncio.create_task(_run_intent())
+        memory_task = asyncio.create_task(_run_memory())
+        policy_task = asyncio.create_task(_run_policy())
+
+        # Yield events as they come in until all 3 "done" events have been yielded (i.e. 6 events total)
+        for _ in range(6):
+            yield await queue.get()
+
+        # Await the actual results to use them downstream
+        (intents, emotion, issue_queue), customer, policy_results = await asyncio.gather(
+            intent_task, memory_task, policy_task
+        )
 
         # 4. Tools (Dynamic Execution could go here, but for now we run the basics based on intent)
         yield _event("tools", "running")
         tool_results = []
         if {"billing_dispute", "duplicate_charge", "refund_request"} & set(intents):
             invoices = await asyncio.to_thread(get_invoice_history, customer_id, months=3, db_path=db_path)
-            tool_results.append({"tool_name": "get_invoice_history", "ok": True, "summary": f"{len(invoices)} invoices loaded", "result": {"invoices": invoices}})
+            tool_results.append({"tool_name": "get_invoice_history", "ok": True,
+                                "summary": f"{len(invoices)} invoices loaded", "result": {"invoices": invoices}})
 
             duplicate = await asyncio.to_thread(check_duplicate_charge, customer_id, db_path=db_path)
             duplicate_summary = _duplicate_summary(duplicate)
-            tool_results.append({"tool_name": "check_duplicate_charge", "ok": True, "summary": duplicate_summary, "result": duplicate})
+            tool_results.append({"tool_name": "check_duplicate_charge",
+                                "ok": True, "summary": duplicate_summary, "result": duplicate})
             if duplicate.get("duplicate_confirmed"):
                 replay = await asyncio.to_thread(_check_credit_replay, message, customer_id, duplicate, db_path)
                 tool_results.append({
@@ -135,11 +156,13 @@ def chat_message_stream(
         if {"service_outage", "router_issue"} & set(intents):
             if customer and customer.get("location"):
                 outage = await asyncio.to_thread(check_outage_status, customer["location"], customer_id=customer_id, db_path=db_path)
-                tool_results.append({"tool_name": "check_outage_status", "ok": True, "summary": _outage_summary(outage), "result": outage})
+                tool_results.append({"tool_name": "check_outage_status", "ok": True,
+                                    "summary": _outage_summary(outage), "result": outage})
 
         if "router_issue" in intents:
             diagnostic = await asyncio.to_thread(run_router_diagnostic, customer_id, db_path=db_path)
-            tool_results.append({"tool_name": "run_router_diagnostic", "ok": True, "summary": str(diagnostic.get("recommendation") or "diagnostic complete"), "result": diagnostic})
+            tool_results.append({"tool_name": "run_router_diagnostic", "ok": True, "summary": str(
+                diagnostic.get("recommendation") or "diagnostic complete"), "result": diagnostic})
 
         if backend_intent == "cancellation_confirmation":
             cancellation_request = await asyncio.to_thread(_create_cancellation_request, customer_id, message, db_path)
@@ -152,7 +175,8 @@ def chat_message_stream(
             _mark_cancellation_completed(chat_state, cancellation_request)
         elif "cancellation_intent" in intents:
             subscription = await asyncio.to_thread(_get_subscription_status, customer_id, db_path)
-            cancellation_policy = _get_cancellation_policy(customer, subscription)
+            cancellation_policy = _get_cancellation_policy(
+                customer, subscription)
             pending_credits = await asyncio.to_thread(_check_pending_credits, customer_id, customer, db_path)
             tool_results.extend([
                 {
@@ -182,7 +206,8 @@ def chat_message_stream(
         yield _event("dag", "running")
         # In a fully dynamic system, this step would be driven by the ReAct loop determining the next action.
         # We will just pass a generic compliant status for now to let the LLM decide.
-        dag = {"dag_name": "dynamic_agent_path", "policy_status": "compliant", "action": "none", "path": intents, "ujcs": 0.86 if tool_results else 0.0}
+        dag = {"dag_name": "dynamic_agent_path", "policy_status": "compliant",
+               "action": "none", "path": intents, "ujcs": 0.86 if tool_results else 0.0}
         yield _event("dag", "done", dag)
 
         # 6. Response
@@ -194,19 +219,22 @@ def chat_message_stream(
             name = _first_name(customer)
             final_text = f"Okay {name}, I have stopped the cancellation process. Your service will remain active. Let me know if there's anything else I can help with!"
         elif backend_intent == "cancellation_confirmation":
-            final_text = _cancellation_confirmation_response(customer, tool_results)
+            final_text = _cancellation_confirmation_response(
+                customer, tool_results)
         elif "cancellation_intent" in intents:
             final_text = _cancellation_options_response(customer, tool_results)
         else:
             current_findings = _finding_keys(tool_results)
-            new_findings = [key for key in current_findings if key not in chat_state.get("presented_findings", [])]
+            new_findings = [key for key in current_findings if key not in chat_state.get(
+                "presented_findings", [])]
             is_repeat = bool(current_findings) and not new_findings
 
             if is_repeat:
                 # The customer is re-raising something we already covered this
                 # session. Say it has already been handled and move forward
                 # instead of re-deriving the same evidence.
-                final_text = _already_addressed_response(customer, intents, emotion, tool_results)
+                final_text = _already_addressed_response(
+                    customer, intents, emotion, tool_results)
             else:
                 history_text = ""
                 if chat_state.get("history"):
@@ -223,7 +251,7 @@ def chat_message_stream(
                     f"Tool Results: {tool_results}\n"
                     f"Policies Retrieved: {[p['policy_id'] for p in policy_results]}\n\n"
                     f"{_session_context_note(chat_state)}"
-                    "Write a concise, friendly, evidence-grounded final response to the customer. "
+                    "Write a very short, friendly, evidence-grounded final response to the customer (maximum 2 sentences). "
                     "Use the verified tool results and policy retrievals. "
                     "If an action guard says the requested action was already taken, say that clearly and do not pretend to run it again. "
                     "If the customer is angry or frustrated, acknowledge it without asking them to repeat known details. "
@@ -238,9 +266,11 @@ def chat_message_stream(
                     final_text = await asyncio.to_thread(llm.generate, prompt, response_mime_type="text/plain", temperature=0.7)
                     final_text = final_text.strip()
                     if not final_text or _response_overclaims(final_text, tool_results) or _response_misses_evidence(final_text, tool_results):
-                        final_text = _evidence_response(customer, intents, emotion, tool_results)
+                        final_text = _evidence_response(
+                            customer, intents, emotion, tool_results)
                 except Exception:
-                    final_text = _evidence_response(customer, intents, emotion, tool_results)
+                    final_text = _evidence_response(
+                        customer, intents, emotion, tool_results)
 
             _remember_findings(chat_state, current_findings)
 
@@ -285,7 +315,8 @@ def _classify_message(message: str, llm: LLMClient | None):
 
 def _effective_emotion(message: str, classifier_emotion: str) -> str:
     text = message.lower()
-    anger_terms = ("angry", "ridiculous", "unacceptable", "furious", "useless", "terrible", "hate")
+    anger_terms = ("angry", "ridiculous", "unacceptable",
+                   "furious", "useless", "terrible", "hate")
     if any(term in text for term in anger_terms):
         return "angry"
     return classifier_emotion
@@ -443,9 +474,12 @@ def _normalize_chat_intent(message: str, state: dict[str, Any]) -> str | None:
     if any(term in text for term in abort_terms):
         return "abort_cancellation"
 
-    cancel_confirmations = {"cancel", "cancel now", "proceed", "yes cancel", "continue cancellation", "cacel", "cancle"}
-    cancel_terms = ("cancel", "cancellation", "disconnect", "stop my subscription", "stop service", "close my account", "cacel", "cancle")
-    is_cancel_message = any(term in text for term in cancel_terms) or text in cancel_confirmations
+    cancel_confirmations = {"cancel", "cancel now", "proceed",
+                            "yes cancel", "continue cancellation", "cacel", "cancle"}
+    cancel_terms = ("cancel", "cancellation", "disconnect", "stop my subscription",
+                    "stop service", "close my account", "cacel", "cancle")
+    is_cancel_message = any(
+        term in text for term in cancel_terms) or text in cancel_confirmations
     # A cancellation request was already created this session: re-raising it
     # should confirm it is already done, not restart the options flow.
     if state.get("cancellation_request") and is_cancel_message:
@@ -538,7 +572,8 @@ def _get_subscription_status(customer_id: str, db_path: Path) -> dict[str, Any]:
 
 
 def _get_cancellation_policy(customer: dict[str, Any] | None, subscription: dict[str, Any]) -> dict[str, Any]:
-    risk_level = str((customer or {}).get("risk_level") or subscription.get("risk_level") or "low")
+    risk_level = str((customer or {}).get("risk_level")
+                     or subscription.get("risk_level") or "low")
     return {
         "policy_id": "cancellation_policy",
         "policy_name": "cancellation_retention_dag",
@@ -555,7 +590,8 @@ def _check_pending_credits(customer_id: str, customer: dict[str, Any] | None, db
     duplicate = check_duplicate_charge(customer_id, db_path=db_path)
     outage = None
     if customer and customer.get("location"):
-        outage = check_outage_status(str(customer["location"]), customer_id=customer_id, db_path=db_path)
+        outage = check_outage_status(
+            str(customer["location"]), customer_id=customer_id, db_path=db_path)
 
     with sqlite3.connect(db_path) as connection:
         connection.row_factory = sqlite3.Row
@@ -569,13 +605,16 @@ def _check_pending_credits(customer_id: str, customer: dict[str, Any] | None, db
             (customer_id,),
         ).fetchall()
     existing_credits = [dict(row) for row in credit_rows]
-    existing_reasons = " ".join(str(row.get("reason") or "").lower() for row in existing_credits)
+    existing_reasons = " ".join(
+        str(row.get("reason") or "").lower() for row in existing_credits)
 
     outage_credit = 0.0
     if outage and outage.get("verified") and "outage" not in existing_reasons:
-        outage_credit = 500.0 if float(outage.get("duration_hours") or 0) >= 6 else 100.0
+        outage_credit = 500.0 if float(outage.get(
+            "duration_hours") or 0) >= 6 else 100.0
 
-    duplicate_pending = bool(duplicate.get("duplicate_confirmed")) and "duplicate" not in existing_reasons
+    duplicate_pending = bool(duplicate.get(
+        "duplicate_confirmed")) and "duplicate" not in existing_reasons
     return {
         "customer_id": customer_id,
         "pending_credit_amount": outage_credit,
@@ -707,18 +746,22 @@ def _active_flow_greeting_response(customer: dict[str, Any] | None, state: dict[
 
 def _cancellation_options_response(customer: dict[str, Any] | None, tools: list[dict[str, Any]]) -> str:
     name = _first_name(customer)
-    by_name = {str(tool.get("tool_name")): tool.get("result") or {} for tool in tools}
+    by_name = {str(tool.get("tool_name")): tool.get("result") or {}
+               for tool in tools}
     subscription = by_name.get("get_subscription_status", {})
     pending = by_name.get("check_pending_credits", {})
     lines = []
     if subscription.get("cancellation_allowed"):
         fee = float(subscription.get("cancellation_fee") or 0)
         if fee:
-            lines.append(f"{name}, cancellation is allowed on your account. The current plan has an INR {fee:g} cancellation fee.")
+            lines.append(
+                f"{name}, cancellation is allowed on your account. The current plan has an INR {fee:g} cancellation fee.")
         else:
-            lines.append(f"{name}, cancellation is allowed on your account and there is no lock-in fee.")
+            lines.append(
+                f"{name}, cancellation is allowed on your account and there is no lock-in fee.")
     else:
-        lines.append(f"{name}, I checked your subscription status and cancellation needs a specialist review before it can proceed.")
+        lines.append(
+            f"{name}, I checked your subscription status and cancellation needs a specialist review before it can proceed.")
 
     pending_items = []
     amount = float(pending.get("pending_credit_amount") or 0)
@@ -726,12 +769,16 @@ def _cancellation_options_response(customer: dict[str, Any] | None, tools: list[
         pending_items.append(f"INR {amount:g} outage credit is still eligible")
     if pending.get("duplicate_charge_refund_pending"):
         invoice = pending.get("duplicate_invoice_id")
-        pending_items.append(f"a duplicate-charge review is pending{f' for invoice {invoice}' if invoice else ''}")
+        pending_items.append(
+            f"a duplicate-charge review is pending{f' for invoice {invoice}' if invoice else ''}")
     if pending_items:
-        lines.append("Before I proceed, I found pending account value: " + "; ".join(pending_items) + ".")
-        lines.append("You can cancel now, or resolve the pending credit/refund first and then cancel. Which do you prefer?")
+        lines.append("Before I proceed, I found pending account value: " +
+                     "; ".join(pending_items) + ".")
+        lines.append(
+            "You can cancel now, or resolve the pending credit/refund first and then cancel. Which do you prefer?")
     else:
-        lines.append("I did not find pending credits blocking the request. Reply 'cancel' to create the cancellation request now.")
+        lines.append(
+            "I did not find pending credits blocking the request. Reply 'cancel' to create the cancellation request now.")
     return " ".join(lines)
 
 
@@ -742,7 +789,8 @@ def _cancellation_confirmation_response(customer: dict[str, Any] | None, tools: 
         if tool.get("tool_name") == "create_cancellation_request":
             request = tool.get("result") or {}
             break
-    request_id = request.get("cancellation_request_id") or request.get("ticket_id") or "created"
+    request_id = request.get("cancellation_request_id") or request.get(
+        "ticket_id") or "created"
     if request.get("mode") == "already_taken":
         return (
             f"{name}, your cancellation request is already open as {request_id}. "
@@ -760,7 +808,8 @@ def _finding_keys(tools: list[dict[str, Any]]) -> list[str]:
 
     Used to detect when a later turn is re-raising something already covered.
     """
-    by_name = {str(tool.get("tool_name")): (tool.get("result") or {}) for tool in tools}
+    by_name = {str(tool.get("tool_name")): (tool.get("result") or {})
+               for tool in tools}
     keys: list[str] = []
     duplicate = by_name.get("check_duplicate_charge") or {}
     if duplicate.get("duplicate_confirmed"):
@@ -820,7 +869,8 @@ def _already_addressed_response(
     tools: list[dict[str, Any]],
 ) -> str:
     name = _first_name(customer)
-    by_name = {str(tool.get("tool_name")): (tool.get("result") or {}) for tool in tools}
+    by_name = {str(tool.get("tool_name")): (tool.get("result") or {})
+               for tool in tools}
     duplicate = by_name.get("check_duplicate_charge") or {}
     outage = by_name.get("check_outage_status") or {}
     replay = by_name.get("apply_credit_guard") or {}
@@ -828,61 +878,77 @@ def _already_addressed_response(
     covered: list[str] = []
     if duplicate.get("duplicate_confirmed"):
         amount = float(duplicate.get("duplicate_amount") or 0)
-        covered.append(f"the duplicate charge on invoice {duplicate.get('invoice_id')} for INR {amount:g}")
+        covered.append(
+            f"the duplicate charge on invoice {duplicate.get('invoice_id')} for INR {amount:g}")
     if outage.get("verified"):
         covered.append(f"the verified outage in {outage.get('location')}")
 
     parts: list[str] = []
     if covered:
-        parts.append(f"{name}, we've already been over {_join_clause(covered)} - nothing new has changed on the account since we last checked.")
+        parts.append(
+            f"{name}, we've already been over {_join_clause(covered)} - nothing new has changed on the account since we last checked.")
     else:
-        parts.append(f"{name}, I've already looked into this and there's no new information on the account since we last checked.")
+        parts.append(
+            f"{name}, I've already looked into this and there's no new information on the account since we last checked.")
 
     if isinstance(replay, dict) and replay.get("already_taken"):
         matched = replay.get("matched_action") or {}
         summary = matched.get("summary") if isinstance(matched, dict) else None
-        parts.append(f"The credit was already applied{f' ({summary})' if summary else ''}, so there's nothing more to run on that.")
+        parts.append(
+            f"The credit was already applied{f' ({summary})' if summary else ''}, so there's nothing more to run on that.")
     elif duplicate.get("duplicate_confirmed") or outage.get("verified"):
-        parts.append("It's still queued at the policy gate for the refund/credit to be actioned; I won't claim it's done until the tool confirms it.")
+        parts.append(
+            "It's still queued at the policy gate for the refund/credit to be actioned; I won't claim it's done until the tool confirms it.")
 
     if "cancellation_intent" in intents:
         parts.append("Your cancellation is still on hold behind these items. Do you want me to push the refund through with a specialist, or go ahead with the cancellation?")
     else:
-        parts.append("Would you like me to escalate it to a specialist to action it now, or is there anything else I can help with?")
+        parts.append(
+            "Would you like me to escalate it to a specialist to action it now, or is there anything else I can help with?")
     return " ".join(parts)
 
 
 def _evidence_response(customer: dict[str, Any] | None, intents: list[str], emotion: str, tools: list[dict[str, Any]]) -> str:
     name = _first_name(customer)
     by_name = {str(tool.get("tool_name")): tool for tool in tools}
-    duplicate = (by_name.get("check_duplicate_charge") or {}).get("result") or {}
+    duplicate = (by_name.get("check_duplicate_charge")
+                 or {}).get("result") or {}
     outage = (by_name.get("check_outage_status") or {}).get("result") or {}
     replay = (by_name.get("apply_credit_guard") or {}).get("result") or {}
 
     parts = []
     if emotion == "angry":
-        parts.append(f"{name}, I hear how frustrating this is. I will use the evidence already on the account instead of making you repeat everything.")
+        parts.append(
+            f"{name}, I hear how frustrating this is. I will use the evidence already on the account instead of making you repeat everything.")
     elif emotion == "frustrated" or _relationship_start(customer) < 40:
-        parts.append(f"{name}, I can see this has taken more effort than it should. I will keep this focused and verify each issue before actioning it.")
+        parts.append(
+            f"{name}, I can see this has taken more effort than it should. I will keep this focused and verify each issue before actioning it.")
     else:
-        parts.append(f"{name}, I checked your account and the verified support evidence.")
+        parts.append(
+            f"{name}, I checked your account and the verified support evidence.")
 
     if duplicate.get("duplicate_confirmed"):
         amount = float(duplicate.get("duplicate_amount") or 0)
-        parts.append(f"There is duplicate payment evidence on invoice {duplicate.get('invoice_id')} for INR {amount:g}.")
+        parts.append(
+            f"There is duplicate payment evidence on invoice {duplicate.get('invoice_id')} for INR {amount:g}.")
     if outage.get("verified"):
         duration = float(outage.get("duration_hours") or 0)
-        parts.append(f"There is also a verified outage in {outage.get('location')} lasting {duration:g} hours.")
+        parts.append(
+            f"There is also a verified outage in {outage.get('location')} lasting {duration:g} hours.")
     if "cancellation_intent" in intents:
-        parts.append("I will keep the cancellation request queued while the billing and service issues are handled first.")
+        parts.append(
+            "I will keep the cancellation request queued while the billing and service issues are handled first.")
     if isinstance(replay, dict) and replay.get("already_taken"):
         matched = replay.get("matched_action") or {}
         summary = matched.get("summary") if isinstance(matched, dict) else None
-        parts.append(f"That requested credit action has already been taken{f': {summary}' if summary else ''}, so I will not run it again.")
+        parts.append(
+            f"That requested credit action has already been taken{f': {summary}' if summary else ''}, so I will not run it again.")
     elif duplicate.get("duplicate_confirmed") or outage.get("verified"):
-        parts.append("The next action is ready for the policy gate; I will not claim it is complete until the tool action confirms it.")
+        parts.append(
+            "The next action is ready for the policy gate; I will not claim it is complete until the tool action confirms it.")
     else:
-        parts.append("I do not have enough verified evidence to take an account action yet, so the next step is clarification or a safe diagnostic.")
+        parts.append(
+            "I do not have enough verified evidence to take an account action yet, so the next step is clarification or a safe diagnostic.")
     return " ".join(parts)
 
 
@@ -890,7 +956,8 @@ def _response_overclaims(text: str, tools: list[dict[str, Any]]) -> bool:
     lowered = text.lower()
     by_name = {str(tool.get("tool_name")): tool for tool in tools}
     guard = (by_name.get("apply_credit_guard") or {}).get("result") or {}
-    credit_already_taken = isinstance(guard, dict) and bool(guard.get("already_taken"))
+    credit_already_taken = isinstance(
+        guard, dict) and bool(guard.get("already_taken"))
     credit_tool_applied = any(
         str(tool.get("tool_name")) in {"apply_credit", "refund_payment"}
         and bool((tool.get("result") or {}).get("applied", False))
@@ -932,7 +999,8 @@ def _response_overclaims(text: str, tools: list[dict[str, Any]]) -> bool:
 def _response_misses_evidence(text: str, tools: list[dict[str, Any]]) -> bool:
     lowered = text.lower()
     by_name = {str(tool.get("tool_name")): tool for tool in tools}
-    duplicate = (by_name.get("check_duplicate_charge") or {}).get("result") or {}
+    duplicate = (by_name.get("check_duplicate_charge")
+                 or {}).get("result") or {}
     outage = (by_name.get("check_outage_status") or {}).get("result") or {}
     if isinstance(duplicate, dict) and duplicate.get("duplicate_confirmed"):
         if not any(term in lowered for term in ("duplicate", "invoice", "inr", "double charge")):
@@ -940,7 +1008,7 @@ def _response_misses_evidence(text: str, tools: list[dict[str, Any]]) -> bool:
     if isinstance(outage, dict) and outage.get("verified"):
         if not any(term in lowered for term in ("outage", "chennai", "7 hour", "7-hour", "service issue")):
             return True
-    
+
     # Ensure the response is at least a minimum length to be considered valid
     if len(text.strip()) < 5:
         return True

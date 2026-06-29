@@ -97,7 +97,8 @@ def confirm_action_replay(
     *,
     llm_factory: LLMFactory | None = None,
 ) -> ActionReplayDecision:
-    same_action = [action for action in taken_actions if action.action == candidate.action]
+    same_action = [
+        action for action in taken_actions if action.action == candidate.action]
     if not same_action:
         return ActionReplayDecision(
             requested_action=candidate.action,
@@ -109,7 +110,8 @@ def confirm_action_replay(
 
     llm = llm_factory
     if llm is None:
-        llm = lambda: LLMClient(model="secondary", timeout_seconds=8)
+        def llm():
+            return LLMClient(model="secondary", timeout_seconds=8)
 
     deterministic_match = _best_deterministic_match(candidate, same_action)
     try:
@@ -141,7 +143,8 @@ def confirm_action_replay(
         requested_action=candidate.action,
         already_taken=already_taken,
         confidence=_clamp_confidence(payload.get("confidence")),
-        reason=str(payload.get("reason") or "LLM semantic action replay check"),
+        reason=str(payload.get("reason")
+                   or "LLM semantic action replay check"),
         checked_with_llm=True,
         matched_action=matched,
     )
@@ -219,9 +222,11 @@ def _audit_actions(connection: sqlite3.Connection, customer_id: str) -> list[Tak
                 TakenAction(
                     action=name,
                     customer_id=customer_id,
-                    target_id=_first_text(payload, "credit_id", "ticket_id", "invoice_id", "id"),
+                    target_id=_first_text(
+                        payload, "credit_id", "ticket_id", "invoice_id", "id"),
                     amount=_float_or_none(payload.get("amount")),
-                    reason=_first_text(payload, "reason", "issue_type", "status"),
+                    reason=_first_text(payload, "reason",
+                                       "issue_type", "status"),
                     source="audit_logs",
                     summary=f"{name} recorded in audit log",
                 )
@@ -294,8 +299,10 @@ def _match_by_index(actions: list[TakenAction], index: Any) -> TakenAction | Non
 
 
 def _token_overlap(left: str, right: str) -> float:
-    left_tokens = {token for token in left.lower().replace("_", " ").split() if token}
-    right_tokens = {token for token in right.lower().replace("_", " ").split() if token}
+    left_tokens = {token for token in left.lower().replace(
+        "_", " ").split() if token}
+    right_tokens = {token for token in right.lower().replace(
+        "_", " ").split() if token}
     if not left_tokens or not right_tokens:
         return 0.0
     return len(left_tokens & right_tokens) / len(left_tokens | right_tokens)

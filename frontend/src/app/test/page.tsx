@@ -19,6 +19,7 @@ import {
   Wrench,
   X,
 } from "lucide-react";
+import { OutageWidget, InvoiceWidget, CreditWidget } from "../../components/GenerativeUI";
 
 type CustomerProfile = {
   customer_id: string;
@@ -33,6 +34,7 @@ type ChatMessage = {
   role: "customer" | "agent";
   content: string;
   timestamp: string;
+  toolResults?: Record<string, unknown>[];
 };
 
 type PipelineStepId = "intent" | "memory" | "policy" | "tools" | "dag" | "response";
@@ -178,6 +180,8 @@ export function LiveAgentConsole({
     const normalized = text.trim();
     if (!normalized || status === "THINKING") return;
 
+    let currentToolResults: Record<string, unknown>[] = [];
+
     streamRef.current?.close();
     setInput("");
     setStatus("THINKING");
@@ -204,6 +208,10 @@ export function LiveAgentConsole({
         )
       );
 
+      if (data.step === "tools" && data.status === "done" && data.result.tools) {
+        currentToolResults = data.result.tools as Record<string, unknown>[];
+      }
+
       if (data.step === "response" && data.status === "done") {
         const text = typeof data.result.text === "string" ? data.result.text : "Done. I checked the account and prepared the next action.";
         setHealth(typeof data.result.health_score === "number" ? data.result.health_score : health);
@@ -213,7 +221,7 @@ export function LiveAgentConsole({
         });
         setMessages((items) => [
           ...items,
-          { role: "agent", content: text, timestamp: new Date().toISOString() },
+          { role: "agent", content: text, timestamp: new Date().toISOString(), toolResults: currentToolResults },
         ]);
         setStatus("RESOLVED");
         stream.close();
@@ -283,7 +291,7 @@ export function LiveAgentConsole({
           </div>
         </aside>
 
-        <section className="glass min-h-[620px] flex flex-col overflow-hidden xl:min-h-[720px]">
+        <section className="glass h-[620px] flex flex-col overflow-hidden xl:h-[720px]">
           <div className="px-5 py-4 border-b flex items-center gap-3" style={{ borderColor: "var(--border)" }}>
             <div className="w-10 h-10 rounded-full flex items-center justify-center" style={{ background: "rgba(20,184,166,0.12)", color: "#5eead4", border: "1px solid rgba(20,184,166,0.25)" }}>
               <User size={18} />
@@ -305,6 +313,12 @@ export function LiveAgentConsole({
                     </span>
                     <div className="rounded-xl px-3 py-2 text-sm leading-relaxed" style={customer ? { background: "rgba(20,184,166,0.15)", border: "1px solid rgba(20,184,166,0.26)", color: "var(--text-primary)" } : { background: "var(--surface-3)", border: "1px solid var(--border)", color: "var(--text-primary)" }}>
                       {message.content}
+                      {message.toolResults && message.toolResults.map((tool: Record<string, unknown>, idx: number) => {
+                        if (tool.tool_name === "check_outage_status") return <OutageWidget key={idx} result={tool.result as Record<string, unknown>} />;
+                        if (tool.tool_name === "get_invoice_history") return <InvoiceWidget key={idx} result={tool.result as Record<string, unknown>} />;
+                        if (tool.tool_name === "apply_credit") return <CreditWidget key={idx} result={tool.result as Record<string, unknown>} />;
+                        return null;
+                      })}
                     </div>
                   </div>
                 </div>

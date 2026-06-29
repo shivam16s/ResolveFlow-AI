@@ -77,7 +77,8 @@ def _seed_demo_customer_risk(connection: sqlite3.Connection) -> None:
                 SET risk_level = ?, churn_score = ?
                 WHERE customer_id = ?
                 """,
-                ("medium" if index % 2 == 0 else "low", 0.24 + (index % 5) * 0.06, customer_id),
+                ("medium" if index % 2 == 0 else "low",
+                 0.24 + (index % 5) * 0.06, customer_id),
             )
 
 
@@ -99,21 +100,29 @@ def _seed_demo_conversations(connection: sqlite3.Connection, now: datetime) -> N
 def _rahul_case(now: datetime) -> dict[str, Any]:
     created_at = now - timedelta(minutes=15)
     tools = [
-        _tool("lookup_customer", {"customer_id": DEMO_CUSTOMER_ID}, {"risk_level": "high"}, created_at, 1),
-        _tool("get_invoice_history", {"customer_id": DEMO_CUSTOMER_ID}, {"duplicate_charge": True}, created_at, 2),
-        _tool("check_duplicate_charge", {"invoice_id": "INV-8821"}, {"duplicate_payment_ids": ["PAY-1001-A", "PAY-1001-B"]}, created_at, 3),
-        _tool("check_outage_status", {"location": "Chennai Zone-04"}, {"verified": True, "duration_hours": 7.0}, created_at, 4),
-        _tool("retrieve_policy", {"query": "duplicate charge outage credit cancellation"}, {"confidence": 0.95}, created_at, 5),
-        _tool("run_router_diagnostic", {"customer_id": DEMO_CUSTOMER_ID}, {"router_status": "degraded"}, created_at, 6),
+        _tool("lookup_customer", {"customer_id": DEMO_CUSTOMER_ID}, {
+              "risk_level": "high"}, created_at, 1),
+        _tool("get_invoice_history", {"customer_id": DEMO_CUSTOMER_ID}, {
+              "duplicate_charge": True}, created_at, 2),
+        _tool("check_duplicate_charge", {"invoice_id": "INV-8821"}, {
+              "duplicate_payment_ids": ["PAY-1001-A", "PAY-1001-B"]}, created_at, 3),
+        _tool("check_outage_status", {"location": "Chennai Zone-04"},
+              {"verified": True, "duration_hours": 7.0}, created_at, 4),
+        _tool("retrieve_policy", {"query": "duplicate charge outage credit cancellation"}, {
+              "confidence": 0.95}, created_at, 5),
+        _tool("run_router_diagnostic", {"customer_id": DEMO_CUSTOMER_ID}, {
+              "router_status": "degraded"}, created_at, 6),
     ]
     return {
         "session_id": DEMO_SESSION_ID,
         "case_id": DEMO_CASE_ID,
         "customer_id": DEMO_CUSTOMER_ID,
         "messages": [
-            _message("user", "I was charged twice this month, my internet is still down, and I want to cancel.", created_at, 1),
+            _message(
+                "user", "I was charged twice this month, my internet is still down, and I want to cancel.", created_at, 1),
             _message("assistant", "I found three issues: duplicate billing, verified outage, and cancellation risk. I am checking the policy path before taking action.", created_at, 2),
-            _message("user", "Do not just tell me to restart the router again.", created_at, 3),
+            _message(
+                "user", "Do not just tell me to restart the router again.", created_at, 3),
             _message("assistant", "Understood. I verified the network outage first and will only ask for the router step needed to complete dispatch eligibility.", created_at, 4),
         ],
         "intents": ["billing", "outage", "cancellation"],
@@ -124,7 +133,8 @@ def _rahul_case(now: datetime) -> dict[str, Any]:
         },
         "tools_called": tools,
         "health_scores": [
-            {"turn": 1, "score": 29, "label": "Customer is angry and mentions cancellation."},
+            {"turn": 1, "score": 29,
+                "label": "Customer is angry and mentions cancellation."},
             {"turn": 2, "score": 38, "label": "All issues acknowledged."},
             {"turn": 3, "score": 42, "label": "Loop risk detected and corrected."},
             {"turn": 4, "score": 46, "label": "WAITING on one guided verification step."},
@@ -136,9 +146,12 @@ def _rahul_case(now: datetime) -> dict[str, Any]:
         "created_at": created_at.isoformat(),
         "completed_at": None,
         "evidence_used": [
-            {"type": "invoice", "id": "INV-8821", "finding": "duplicate payment pair detected"},
-            {"type": "outage", "id": "OUT-CHN-04-20260520", "finding": "verified outage longer than 6 hours"},
-            {"type": "policy", "id": "POL-SVC-CREDIT", "finding": "credit allowed after verified outage and duplicate charge validation"},
+            {"type": "invoice", "id": "INV-8821",
+                "finding": "duplicate payment pair detected"},
+            {"type": "outage", "id": "OUT-CHN-04-20260520",
+                "finding": "verified outage longer than 6 hours"},
+            {"type": "policy", "id": "POL-SVC-CREDIT",
+                "finding": "credit allowed after verified outage and duplicate charge validation"},
         ],
         "action_taken": [
             {"action": "held_customer_in_guided_action", "state": "WAITING"},
@@ -161,10 +174,12 @@ def _rahul_case(now: datetime) -> dict[str, Any]:
 
 def _case_record(index: int, case_id: str, customer_id: str, status: str, now: datetime) -> dict[str, Any]:
     issue_set = ISSUE_SETS[index % len(ISSUE_SETS)]
-    created_at = now - timedelta(days=index % 7, hours=1 + index, minutes=index * 3)
+    created_at = now - timedelta(days=index %
+                                 7, hours=1 + index, minutes=index * 3)
     completed_at = created_at + timedelta(minutes=18 + index)
     start_score = 34 + (index * 7) % 36
-    end_score = 72 + (index * 5) % 23 if status == "resolved" else 31 + index % 12
+    end_score = 72 + \
+        (index * 5) % 23 if status == "resolved" else 31 + index % 12
     tools = _tools_for(issue_set, created_at)
     return {
         "session_id": f"demo-session-{index:02d}",
@@ -172,15 +187,18 @@ def _case_record(index: int, case_id: str, customer_id: str, status: str, now: d
         "customer_id": customer_id,
         "messages": [
             _message("user", _user_prompt(issue_set), created_at, 1),
-            _message("assistant", "I have identified the issue and am checking the required policy evidence.", created_at, 2),
-            _message("assistant", "The required verification steps are complete." if status == "resolved" else "This needs a specialist because one verification step failed.", created_at, 3),
+            _message(
+                "assistant", "I have identified the issue and am checking the required policy evidence.", created_at, 2),
+            _message("assistant", "The required verification steps are complete." if status ==
+                     "resolved" else "This needs a specialist because one verification step failed.", created_at, 3),
         ],
         "intents": issue_set,
         "slots": {"customer_id": customer_id},
         "tools_called": tools,
         "health_scores": [
             {"turn": 1, "score": start_score, "label": "Initial risk estimate"},
-            {"turn": 2, "score": min(100, start_score + 12), "label": "Evidence retrieved"},
+            {"turn": 2, "score": min(100, start_score + 12),
+             "label": "Evidence retrieved"},
             {"turn": 3, "score": end_score, "label": "Final session health"},
         ],
         "final_status": status,
@@ -190,8 +208,10 @@ def _case_record(index: int, case_id: str, customer_id: str, status: str, now: d
         "created_at": created_at.isoformat(),
         "completed_at": completed_at.isoformat(),
         "evidence_used": [
-            {"type": "policy", "id": "resolveflow-policy", "finding": "required prerequisite nodes visited"},
-            {"type": "tool", "name": tools[-1]["tool_name"], "finding": "verification completed"},
+            {"type": "policy", "id": "resolveflow-policy",
+                "finding": "required prerequisite nodes visited"},
+            {"type": "tool", "name": tools[-1]["tool_name"],
+                "finding": "verification completed"},
         ],
         "action_taken": [{"action": "resolved_by_ai" if status == "resolved" else "queued_for_handoff"}],
         "policy_dag_path": [
@@ -245,16 +265,20 @@ def _seed_demo_tickets(connection: sqlite3.Connection, now: datetime) -> None:
                 status,
                 "high" if index % 3 == 0 else "medium",
                 created_at.isoformat(),
-                (created_at + timedelta(hours=4)).isoformat() if status == "resolved" else None,
+                (created_at + timedelta(hours=4)
+                 ).isoformat() if status == "resolved" else None,
             ),
         )
 
 
 def _seed_demo_memory(connection: sqlite3.Connection, now: datetime) -> None:
     memories = [
-        ("MEM-DEMO-RAHUL-001", DEMO_CUSTOMER_ID, "stable", "Rahul Sharma has churn risk tied to repeated Chennai Zone-04 outages.", ["customer", "churn", "outage"], DEMO_SESSION_ID),
-        ("MEM-DEMO-RAHUL-002", DEMO_CUSTOMER_ID, "episodic", "Rahul had duplicate payments PAY-1001-A and PAY-1001-B for invoice INV-8821.", ["billing", "duplicate_charge"], DEMO_SESSION_ID),
-        ("MEM-DEMO-RAHUL-003", DEMO_CUSTOMER_ID, "session", "Current session is waiting on one router diagnostic verification before dispatch.", ["guided_action", "waiting"], DEMO_SESSION_ID),
+        ("MEM-DEMO-RAHUL-001", DEMO_CUSTOMER_ID, "stable", "Rahul Sharma has churn risk tied to repeated Chennai Zone-04 outages.",
+         ["customer", "churn", "outage"], DEMO_SESSION_ID),
+        ("MEM-DEMO-RAHUL-002", DEMO_CUSTOMER_ID, "episodic",
+         "Rahul had duplicate payments PAY-1001-A and PAY-1001-B for invoice INV-8821.", ["billing", "duplicate_charge"], DEMO_SESSION_ID),
+        ("MEM-DEMO-RAHUL-003", DEMO_CUSTOMER_ID, "session",
+         "Current session is waiting on one router diagnostic verification before dispatch.", ["guided_action", "waiting"], DEMO_SESSION_ID),
     ]
     for index, (memory_id, customer_id, memory_type, content, tags, session_id) in enumerate(memories):
         timestamp = now - timedelta(minutes=10 - index)
@@ -265,7 +289,8 @@ def _seed_demo_memory(connection: sqlite3.Connection, now: datetime) -> None:
             )
             VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             """,
-            (memory_id, customer_id, memory_type, content, _json(tags), session_id, timestamp.isoformat(), timestamp.isoformat()),
+            (memory_id, customer_id, memory_type, content, _json(tags),
+             session_id, timestamp.isoformat(), timestamp.isoformat()),
         )
 
 
@@ -335,7 +360,8 @@ def _insert_handoff(connection: sqlite3.Connection, row: dict[str, Any]) -> None
             f"HANDOFF-{row['case_id'].lstrip('#')}",
             row["case_id"],
             row["customer_id"],
-            _json({"case_id": row["case_id"], "issues_remaining": row["intents"], "recommended_opening_line": "I have the full policy trail and can take over from here."}),
+            _json({"case_id": row["case_id"], "issues_remaining": row["intents"],
+                  "recommended_opening_line": "I have the full policy trail and can take over from here."}),
             "Verification failed or customer risk threshold crossed",
             "waiting",
             row["created_at"],
@@ -385,10 +411,14 @@ def _json(value: Any) -> str:
 
 def _summary(db_path: Path) -> dict[str, Any]:
     with sqlite3.connect(db_path) as connection:
-        total_cases = connection.execute("SELECT COUNT(*) FROM conversations").fetchone()[0]
-        resolved = connection.execute("SELECT COUNT(*) FROM conversations WHERE final_status = 'resolved'").fetchone()[0]
-        escalated = connection.execute("SELECT COUNT(*) FROM conversations WHERE final_status = 'escalated'").fetchone()[0]
-        credit_total = connection.execute("SELECT COALESCE(SUM(amount), 0) FROM credits").fetchone()[0]
+        total_cases = connection.execute(
+            "SELECT COUNT(*) FROM conversations").fetchone()[0]
+        resolved = connection.execute(
+            "SELECT COUNT(*) FROM conversations WHERE final_status = 'resolved'").fetchone()[0]
+        escalated = connection.execute(
+            "SELECT COUNT(*) FROM conversations WHERE final_status = 'escalated'").fetchone()[0]
+        credit_total = connection.execute(
+            "SELECT COALESCE(SUM(amount), 0) FROM credits").fetchone()[0]
         high_risk = connection.execute(
             "SELECT COUNT(*) FROM customers WHERE risk_level IN ('high', 'critical') OR churn_score >= 0.70"
         ).fetchone()[0]
@@ -404,7 +434,8 @@ def _summary(db_path: Path) -> dict[str, Any]:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Seed dashboard-ready ResolveFlow demo data.")
+    parser = argparse.ArgumentParser(
+        description="Seed dashboard-ready ResolveFlow demo data.")
     parser.add_argument(
         "--db-path",
         type=Path,

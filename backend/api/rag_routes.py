@@ -3,9 +3,10 @@ from __future__ import annotations
 import sqlite3
 from typing import Any
 
+import json
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
 
 from backend.agent.memory_manager import MemoryManager
 from backend.tools import retrieve_policy
@@ -60,7 +61,8 @@ def policy_retrieve(payload: PolicyRetrieveRequest, request: Request) -> JSONRes
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 
     if not result:
-        raise HTTPException(status_code=404, detail=f"policy {payload.policy_name!r} not found or no results")
+        raise HTTPException(
+            status_code=404, detail=f"policy {payload.policy_name!r} not found or no results")
 
     return JSONResponse({
         "results": [result],
@@ -76,7 +78,7 @@ def memory_graph(customer_id: str, request: Request) -> JSONResponse:
         db_path = request.app.state.db_path
         with sqlite3.connect(db_path) as conn:
             graph_nodes = list_memory_graph_nodes(conn, customer_id)
-            
+
             nodes = []
             edges = []
             for node in graph_nodes:
@@ -86,7 +88,7 @@ def memory_graph(customer_id: str, request: Request) -> JSONResponse:
                     "node_type": node["node_type"],
                     "supporting_passages": node["passages"]
                 })
-                
+
                 for edge in node["edges"]:
                     edges.append({
                         "source": node["node_id"],
@@ -111,14 +113,15 @@ def list_customers(request: Request) -> JSONResponse:
         db_path = request.app.state.db_path
         with sqlite3.connect(db_path) as conn:
             conn.row_factory = sqlite3.Row
-            rows = conn.execute("SELECT customer_id, name, risk_segment FROM customers ORDER BY name").fetchall()
+            rows = conn.execute(
+                "SELECT customer_id, name, risk_level FROM customers ORDER BY name").fetchall()
             customers = [dict(row) for row in rows]
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 
     return JSONResponse({"customers": customers})
 
-import json
+
 def _loads_json(value: Any) -> Any:
     if not value:
         return []

@@ -4,8 +4,6 @@ import json
 import re
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Any
-
 from .runner import run_evaluation
 from .scenarios import DEFAULT_EVALUATION_SCENARIOS_PATH, EvaluationScenario, load_evaluation_scenarios
 
@@ -79,16 +77,19 @@ def evaluate_policy_retrievals_with_ragas(
     db_path: Path | None = None,
 ) -> dict:
     if evaluation_result is None:
-        evaluation_result = run_evaluation(k=k, scenarios_path=scenarios_path, db_path=db_path)
+        evaluation_result = run_evaluation(
+            k=k, scenarios_path=scenarios_path, db_path=db_path)
     if not isinstance(evaluation_result, dict):
         raise ValueError("evaluation_result must be a dict when provided")
 
-    scenarios = {scenario.scenario_id: scenario for scenario in load_evaluation_scenarios(scenarios_path)}
+    scenarios = {scenario.scenario_id: scenario for scenario in load_evaluation_scenarios(
+        scenarios_path)}
     scores = []
     for result in _result_items(evaluation_result):
         scenario_id = str(result.get("scenario_id", "")).strip()
         if scenario_id not in scenarios:
-            raise ValueError(f"unknown scenario_id in evaluation result: {scenario_id!r}")
+            raise ValueError(
+                f"unknown scenario_id in evaluation result: {scenario_id!r}")
         scenario = scenarios[scenario_id]
         for retrieval in _policy_retrievals(result):
             scores.append(_score_retrieval(result, scenario, retrieval))
@@ -96,7 +97,8 @@ def evaluate_policy_retrievals_with_ragas(
     return RAGASEvaluationReport(
         retrieval_count=len(scores),
         average_faithfulness=_average(score.faithfulness for score in scores),
-        average_context_precision=_average(score.context_precision for score in scores),
+        average_context_precision=_average(
+            score.context_precision for score in scores),
         scores=scores,
     ).to_dict()
 
@@ -106,15 +108,19 @@ def _score_retrieval(
     scenario: EvaluationScenario,
     retrieval: dict,
 ) -> RAGASPolicyRetrievalScore:
-    policy_id = str(retrieval.get("policy_id") or retrieval.get("policy_name") or "").strip()
-    query = str(retrieval.get("query") or " ".join(scenario.customer_messages)).strip()
+    policy_id = str(retrieval.get("policy_id")
+                    or retrieval.get("policy_name") or "").strip()
+    query = str(retrieval.get("query") or " ".join(
+        scenario.customer_messages)).strip()
     contexts = _contexts(retrieval)
     answer_terms = _answer_terms(scenario, policy_id)
     context_text = " ".join(contexts).lower()
     supported_terms = [term for term in answer_terms if term in context_text]
     missing_terms = [term for term in answer_terms if term not in context_text]
-    faithfulness = round(len(supported_terms) / len(answer_terms), 4) if answer_terms else 1.0
-    relevant_ranks = _relevant_context_ranks(contexts, query=query, answer_terms=answer_terms)
+    faithfulness = round(len(supported_terms) /
+                         len(answer_terms), 4) if answer_terms else 1.0
+    relevant_ranks = _relevant_context_ranks(
+        contexts, query=query, answer_terms=answer_terms)
     context_precision = _average_precision(relevant_ranks, len(contexts))
 
     return RAGASPolicyRetrievalScore(
@@ -137,13 +143,15 @@ def _policy_retrievals(result: dict) -> list[dict]:
         return []
     retrievals = artifacts.get("policy_retrievals")
     if retrievals is None:
-        retrieval_tool = artifacts.get("tool_results", {}).get("retrieve_policy")
+        retrieval_tool = artifacts.get(
+            "tool_results", {}).get("retrieve_policy")
         if isinstance(retrieval_tool, dict) and isinstance(retrieval_tool.get("retrievals"), list):
             retrievals = retrieval_tool["retrievals"]
     if retrievals is None:
         return []
     if not isinstance(retrievals, list):
-        raise ValueError("artifacts.policy_retrievals must be a list when present")
+        raise ValueError(
+            "artifacts.policy_retrievals must be a list when present")
     for retrieval in retrievals:
         if not isinstance(retrieval, dict):
             raise ValueError("policy retrieval entries must be dicts")

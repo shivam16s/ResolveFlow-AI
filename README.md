@@ -22,6 +22,17 @@ Every feature is grounded in a published research paper (τ-bench, τ²-bench, S
 
 ---
 
+## Hackathon Highlights (Recently Added!)
+
+To create a powerful demo for the hackathon, we built these "Wow Factor" features directly into the stack:
+
+*   **Generative UI (Interactive Chat Widgets):** Instead of just replying with text, the agent dynamically controls the frontend. When you ask about billing, outages, or credits, the agent intercepts the SSE stream and renders **Recharts data visualizations** and **interactive cards** directly into the chat bubble!
+*   **"God-Mode" AI Insights:** On the Admin Dashboard, there is a real-time **God-Mode Insights** engine. It aggregates the last 50 customer interactions from the SQLite database and runs them through a Gemini LLM synthesis prompt to instantly generate a proactive Root Cause Analysis for administrators.
+*   **12-Month Deep Billing Data:** Procedurally generated a full year of synthetic invoices and payments for all demo accounts, bringing the `InvoiceWidget` to life with dense historical data.
+*   **Laser-Focused Agent Persona:** Tuned the core AI system prompt to enforce extreme brevity (maximum 2 sentences per reply), making the AI extremely punchy and forcing the Generative UI widgets to shine.
+
+---
+
 ## Architecture
 
 ```mermaid
@@ -56,11 +67,11 @@ The guiding principle is a **glass box**: every resolution step is inspectable �
 
 | Layer | Technology |
 |---|---|
-| Backend | Python 3.10+ · FastAPI · Uvicorn |
+| Backend | Python 3.10+ · FastAPI · Uvicorn (Fully PEP-8 compliant with Flake8) |
 | Data | SQLite (customers, invoices, outages, tickets, credits, audit logs, …) |
-| Vector store | ChromaDB (`resolveflow_policies` + customer memory) |
+| Vector store | ChromaDB (`resolveflow_policies` + customer memory) with fortified error-handling |
 | LLM | Gemini (two-model split: primary for planning/response, secondary for classification) with deterministic rule-based fallbacks |
-| Frontend | Next.js 16 · React 19 · Tailwind CSS · Recharts |
+| Frontend | Next.js 16 · React 19 · Tailwind CSS · Recharts · Lucide-React (ESLint Pristine, fully responsive Dark Mode, Generative UI widgets) |
 
 ---
 
@@ -193,6 +204,8 @@ tasks.md        # build checklist
 8–10. **Warm handoff + customer context card + resolution proof trail** — escalate before failure with full context; UJCS-backed compliant audit log.
 11. **Evaluation harness** — pass^k + 9 metrics + RAGAS + three-layer methodology + τ-bench comparison.
 12. **Admin dashboard** — overview KPIs, case browser, case detail with live reasoning, evaluation page.
+13. **Concurrent Async Pipeline** — The live chat inference pipeline utilizes `asyncio.gather()` to execute Intent Classification, Customer Memory Retrieval, and Semantic Policy RAG concurrently, completely masking heavy I/O latency.
+14. **Fortified Database Architecture** — The `ChromaPolicyStore` has been updated with robust error-handling, dynamic metric fallbacks (from cosine to L2), and automated vector input sanitization, achieving a pristine `flake8` score across the backend.
 
 ---
 

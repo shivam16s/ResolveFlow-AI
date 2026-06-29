@@ -87,7 +87,8 @@ def decide_next_action(
                 intent=issue_queue.current_issue.intent if issue_queue.current_issue else None,
                 reason="conversation health below handoff threshold",
                 handoff_reason=f"Conversation health dropped below {handoff_health_threshold:g}.",
-                metadata={"health_score": numeric_health, "threshold": handoff_health_threshold},
+                metadata={"health_score": numeric_health,
+                          "threshold": handoff_health_threshold},
             )
 
     current_issue = issue_queue.current_issue
@@ -118,7 +119,8 @@ def decide_next_action(
             },
         )
 
-    question = generate_targeted_question(current_issue.intent, normalized_slots)
+    question = generate_targeted_question(
+        current_issue.intent, normalized_slots)
     if question is not None:
         return NextActionDecision(
             action="ASK",

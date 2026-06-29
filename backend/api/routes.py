@@ -1,9 +1,8 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone, date as _date
+from datetime import datetime, timezone
 import json
 import sqlite3
-import uuid
 from typing import Any
 
 from fastapi import APIRouter, HTTPException, Request, BackgroundTasks
@@ -127,12 +126,14 @@ def health_check() -> HealthResponse:
 @dashboard_router.get("/cases/{case_id}/handoff", response_class=HTMLResponse)
 def case_handoff_tab_endpoint(case_id: str, request: Request) -> HTMLResponse:
     try:
-        rendered = render_case_handoff_tab(case_id, db_path=request.app.state.db_path)
+        rendered = render_case_handoff_tab(
+            case_id, db_path=request.app.state.db_path)
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 
     if rendered is None:
-        raise HTTPException(status_code=404, detail=f"case {case_id!r} not found")
+        raise HTTPException(
+            status_code=404, detail=f"case {case_id!r} not found")
     return HTMLResponse(rendered.html)
 
 
@@ -141,11 +142,13 @@ def case_audit_log_tabs_endpoint(case_id: str, request: Request):
     """Return HTML by default, or JSON when the client asks for application/json."""
     if "application/json" not in request.headers.get("accept", ""):
         try:
-            rendered = render_case_audit_log_tabs(case_id, db_path=request.app.state.db_path)
+            rendered = render_case_audit_log_tabs(
+                case_id, db_path=request.app.state.db_path)
         except ValueError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
         if rendered is None:
-            raise HTTPException(status_code=404, detail=f"case {case_id!r} not found")
+            raise HTTPException(
+                status_code=404, detail=f"case {case_id!r} not found")
         return HTMLResponse(rendered.html)
 
     db = request.app.state.db_path
@@ -156,13 +159,15 @@ def case_audit_log_tabs_endpoint(case_id: str, request: Request):
         ).fetchone()
 
     if row is None:
-        raise HTTPException(status_code=404, detail=f"case {case_id!r} not found")
+        raise HTTPException(
+            status_code=404, detail=f"case {case_id!r} not found")
 
     tools = _safe_json_list(row["tools_called"])
     evidence = _safe_json_list(row["evidence_used"])
     actions = _safe_json_list(row["action_taken"])
     dag = _safe_json_list(row["policy_dag_path"])
-    tool_names = [t.get("tool_name", "") if isinstance(t, dict) else str(t) for t in tools]
+    tool_names = [t.get("tool_name", "") if isinstance(
+        t, dict) else str(t) for t in tools]
     action_text = ", ".join(
         a.get("action", str(a)) if isinstance(a, dict) else str(a) for a in actions
     ) or "no actions taken"
@@ -234,19 +239,22 @@ def trigger_evaluation(request: Request, background_tasks: BackgroundTasks) -> J
 @tools_router.get("/lookup_customer/{customer_id}", response_model=ToolResponse)
 def lookup_customer_endpoint(customer_id: str, request: Request) -> ToolResponse:
     try:
-        result = lookup_customer(customer_id, db_path=request.app.state.db_path)
+        result = lookup_customer(
+            customer_id, db_path=request.app.state.db_path)
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 
     if result is None:
-        raise HTTPException(status_code=404, detail=f"customer {customer_id!r} not found")
+        raise HTTPException(
+            status_code=404, detail=f"customer {customer_id!r} not found")
 
     response = ToolResponse(
         tool_name="lookup_customer",
         ok=True,
         result=result,
     )
-    _log_tool_call(request, "lookup_customer", {"customer_id": customer_id}, result=result)
+    _log_tool_call(request, "lookup_customer", {
+                   "customer_id": customer_id}, result=result)
     return response
 
 
@@ -271,7 +279,8 @@ def get_invoice_history_endpoint(customer_id: str, request: Request, months: int
             "invoice_count": len(invoices),
         },
     )
-    _log_tool_call(request, "get_invoice_history", {"customer_id": customer_id, "months": months}, result=response.result)
+    _log_tool_call(request, "get_invoice_history", {
+                   "customer_id": customer_id, "months": months}, result=response.result)
     return response
 
 
@@ -334,7 +343,8 @@ def check_outage_status_endpoint(
 @tools_router.get("/run_router_diagnostic/{customer_id}", response_model=ToolResponse)
 def run_router_diagnostic_endpoint(customer_id: str, request: Request) -> ToolResponse:
     try:
-        result = run_router_diagnostic(customer_id, db_path=request.app.state.db_path)
+        result = run_router_diagnostic(
+            customer_id, db_path=request.app.state.db_path)
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 
@@ -348,7 +358,8 @@ def run_router_diagnostic_endpoint(customer_id: str, request: Request) -> ToolRe
         "run_router_diagnostic",
         {"customer_id": customer_id},
         result=result,
-        evidence=[result["recommendation"]] if result.get("recommendation") else [],
+        evidence=[result["recommendation"]] if result.get(
+            "recommendation") else [],
     )
     return response
 
@@ -371,7 +382,8 @@ def retrieve_policy_endpoint(
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 
     if result is None:
-        raise HTTPException(status_code=404, detail=f"policy {policy_name!r} not found")
+        raise HTTPException(
+            status_code=404, detail=f"policy {policy_name!r} not found")
 
     response = ToolResponse(
         tool_name="retrieve_policy",
@@ -416,7 +428,8 @@ def apply_credit_endpoint(payload: ApplyCreditRequest, request: Request) -> Tool
         payload.model_dump(),
         result=result,
         evidence=[result["reason"]],
-        actions=[{"action": "apply_credit", "credit_id": result["credit_id"], "amount": result["amount"]}],
+        actions=[{"action": "apply_credit",
+                  "credit_id": result["credit_id"], "amount": result["amount"]}],
         policy_path=result.get("policy_path", []),
         ujcs=result.get("ujcs"),
         policy_status=result.get("policy_status"),
@@ -451,7 +464,8 @@ def create_ticket_endpoint(payload: CreateTicketRequest, request: Request) -> To
         "create_ticket",
         payload.model_dump(),
         result=result,
-        actions=[{"action": "create_ticket", "ticket_id": result["ticket_id"], "issue_type": result["issue_type"]}],
+        actions=[{"action": "create_ticket", "ticket_id": result["ticket_id"],
+                  "issue_type": result["issue_type"]}],
         policy_path=result.get("policy_path", []),
         ujcs=result.get("ujcs"),
         policy_status=result.get("policy_status"),
@@ -551,7 +565,8 @@ def generate_handoff_summary_endpoint(payload: HandoffSummaryRequest, request: R
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 
     if result is None:
-        raise HTTPException(status_code=404, detail=f"conversation {payload.conversation_id!r} not found")
+        raise HTTPException(
+            status_code=404, detail=f"conversation {payload.conversation_id!r} not found")
 
     response = ToolResponse(
         tool_name="generate_handoff_summary",
@@ -562,8 +577,10 @@ def generate_handoff_summary_endpoint(payload: HandoffSummaryRequest, request: R
         request,
         "generate_handoff_summary",
         payload.model_dump(),
-        result={"handoff_summary_id": result["handoff_summary_id"], "customer_id": result["customer_id"]},
-        actions=[{"action": "generate_handoff_summary", "handoff_summary_id": result["handoff_summary_id"]}],
+        result={
+            "handoff_summary_id": result["handoff_summary_id"], "customer_id": result["customer_id"]},
+        actions=[{"action": "generate_handoff_summary",
+                  "handoff_summary_id": result["handoff_summary_id"]}],
     )
     return response
 
@@ -580,7 +597,8 @@ def generate_context_card_endpoint(payload: ContextCardRequest, request: Request
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 
     if result is None:
-        raise HTTPException(status_code=404, detail=f"conversation {payload.conversation_id!r} not found")
+        raise HTTPException(
+            status_code=404, detail=f"conversation {payload.conversation_id!r} not found")
 
     response = ToolResponse(
         tool_name="generate_context_card",
@@ -596,7 +614,8 @@ def generate_context_card_endpoint(payload: ContextCardRequest, request: Request
             "customer_id": result["customer_id"],
             "case_id": result.get("case_id"),
         },
-        actions=[{"action": "generate_context_card", "context_card_id": result["context_card_id"]}],
+        actions=[{"action": "generate_context_card",
+                  "context_card_id": result["context_card_id"]}],
     )
     return response
 
@@ -614,7 +633,8 @@ def generate_opening_line_endpoint(payload: OpeningLineRequest, request: Request
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 
     if result is None:
-        raise HTTPException(status_code=404, detail=f"conversation {payload.conversation_id!r} not found")
+        raise HTTPException(
+            status_code=404, detail=f"conversation {payload.conversation_id!r} not found")
 
     response = ToolResponse(
         tool_name="generate_opening_line",
@@ -630,7 +650,8 @@ def generate_opening_line_endpoint(payload: OpeningLineRequest, request: Request
             "customer_id": result.get("customer_id"),
             "opening_line": result["opening_line"],
         },
-        actions=[{"action": "generate_opening_line", "opening_line_id": result["opening_line_id"]}],
+        actions=[{"action": "generate_opening_line",
+                  "opening_line_id": result["opening_line_id"]}],
     )
     return response
 
@@ -680,7 +701,8 @@ def _log_tool_call(
     if not session_id or not customer_id:
         return
 
-    case_id = _header_value(request, "x-resolveflow-case-id") or f"case-{session_id}"
+    case_id = _header_value(
+        request, "x-resolveflow-case-id") or f"case-{session_id}"
     tool_entry = {
         "tool_name": tool_name,
         "args": args,
@@ -693,7 +715,8 @@ def _log_tool_call(
         connection.row_factory = sqlite3.Row
         if not _customer_exists(connection, customer_id):
             return
-        _ensure_conversation(connection, session_id=session_id, customer_id=customer_id)
+        _ensure_conversation(
+            connection, session_id=session_id, customer_id=customer_id)
         row = connection.execute(
             """
             SELECT tools_called, evidence_used, action_taken, policy_dag_path, ujcs, policy_status, health_score,
@@ -725,7 +748,8 @@ def _log_tool_call(
         action_taken.extend(actions or [])
         if policy_path:
             policy_dag_path = list(policy_path)
-        computed_policy_status = policy_status or _policy_status_for_audit(ujcs)
+        computed_policy_status = policy_status or _policy_status_for_audit(
+            ujcs)
         connection.execute(
             """
             INSERT INTO audit_logs (
@@ -783,10 +807,12 @@ def _customer_id_for_audit(request: Request, *, args: dict[str, Any], result: di
     if from_header:
         return from_header
     for payload in (result, args):
-        value = payload.get("customer_id") if isinstance(payload, dict) else None
+        value = payload.get("customer_id") if isinstance(
+            payload, dict) else None
         if isinstance(value, str) and value.strip():
             return value.strip()
-    context_card = result.get("context_card") if isinstance(result, dict) else None
+    context_card = result.get("context_card") if isinstance(
+        result, dict) else None
     if isinstance(context_card, dict):
         customer = context_card.get("customer")
         if isinstance(customer, dict) and isinstance(customer.get("customer_id"), str):
@@ -795,12 +821,14 @@ def _customer_id_for_audit(request: Request, *, args: dict[str, Any], result: di
 
 
 def _customer_exists(connection: sqlite3.Connection, customer_id: str) -> bool:
-    row = connection.execute("SELECT 1 FROM customers WHERE customer_id = ?", (customer_id,)).fetchone()
+    row = connection.execute(
+        "SELECT 1 FROM customers WHERE customer_id = ?", (customer_id,)).fetchone()
     return row is not None
 
 
 def _ensure_conversation(connection: sqlite3.Connection, *, session_id: str, customer_id: str) -> None:
-    row = connection.execute("SELECT customer_id FROM conversations WHERE session_id = ?", (session_id,)).fetchone()
+    row = connection.execute(
+        "SELECT customer_id FROM conversations WHERE session_id = ?", (session_id,)).fetchone()
     if row is None:
         connection.execute(
             "INSERT INTO conversations(session_id, customer_id, messages) VALUES (?, ?, ?)",
@@ -808,7 +836,8 @@ def _ensure_conversation(connection: sqlite3.Connection, *, session_id: str, cus
         )
         return
     if row["customer_id"] != customer_id:
-        raise ValueError(f"session {session_id!r} does not belong to customer {customer_id!r}")
+        raise ValueError(
+            f"session {session_id!r} does not belong to customer {customer_id!r}")
 
 
 def _loads_json(raw_value: str | None) -> list:

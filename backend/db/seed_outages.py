@@ -148,7 +148,8 @@ def seed_outages(db_path: Path = DEFAULT_DB_PATH) -> None:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Seed ResolveFlow outage records.")
+    parser = argparse.ArgumentParser(
+        description="Seed ResolveFlow outage records.")
     parser.add_argument(
         "--db-path",
         type=Path,

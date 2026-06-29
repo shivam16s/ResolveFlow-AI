@@ -1,12 +1,22 @@
 from __future__ import annotations
 
+import json
 import os
 import sqlite3
 from dataclasses import asdict, dataclass
 from datetime import date, datetime, time, timedelta
-import json
 from pathlib import Path
+from typing import Callable
 from uuid import uuid4
+
+from .agent.policy_graph import PolicyActionBlocked, PolicyGraphValidator, compute_ujcs, default_policy_dags
+from .agent.policy_retrieval import (
+    decide_policy_retrieval,
+    decompose_policy_to_strips,
+    evaluate_policy_relevance,
+)
+from .agent.policy_store import DEFAULT_POLICY_DIR, PolicyDocument, load_policy_documents
+from .db.init_db import DEFAULT_DB_PATH
 
 # The seeded ConnectCare world is anchored in May 2026. Live tool calls that do
 # not pass an explicit ``reference_date`` must treat "now" as this demo anchor,
@@ -23,15 +33,6 @@ def _default_reference_date() -> str:
     if configured and configured.strip():
         return configured.strip()
     return DEMO_REFERENCE_DATE
-
-from .agent.policy_graph import PolicyActionBlocked, PolicyGraphValidator, compute_ujcs, default_policy_dags
-from .agent.policy_retrieval import (
-    decide_policy_retrieval,
-    decompose_policy_to_strips,
-    evaluate_policy_relevance,
-)
-from .agent.policy_store import DEFAULT_POLICY_DIR, PolicyDocument, load_policy_documents
-from .db.init_db import DEFAULT_DB_PATH
 
 
 @dataclass(frozen=True)
@@ -452,7 +453,8 @@ def get_invoice_history(
             date=row["date"],
             status=row["status"],
             payment_id=row["payment_id"],
-            payment_amount=float(row["payment_amount"]) if row["payment_amount"] is not None else None,
+            payment_amount=float(
+                row["payment_amount"]) if row["payment_amount"] is not None else None,
             payment_date=row["payment_date"],
             payment_method=row["payment_method"],
             duplicate_flag=bool(row["duplicate_flag"]),
@@ -505,7 +507,8 @@ def check_duplicate_charge(
     duplicate_payment_ids = list(primary_group.get("payment_ids", []))
     payment_timestamps = list(primary_group.get("payment_timestamps", []))
     invoice_id = primary_group.get("invoice_id")
-    single_matching_invoice = bool(primary_group.get("single_matching_invoice", False))
+    single_matching_invoice = bool(
+        primary_group.get("single_matching_invoice", False))
     duplicate_confirmed = bool(duplicate_groups and single_matching_invoice)
 
     return DuplicateChargeResult(
@@ -534,7 +537,8 @@ def check_outage_status(
     normalized_location = location.strip()
     if not normalized_location:
         raise ValueError("location must not be empty")
-    normalized_customer_id = customer_id.strip() if isinstance(customer_id, str) else None
+    normalized_customer_id = customer_id.strip(
+    ) if isinstance(customer_id, str) else None
     if customer_id is not None and not normalized_customer_id:
         raise ValueError("customer_id must not be empty when provided")
 
@@ -573,7 +577,8 @@ def check_outage_status(
     affected_customers = _json_list(row["affected_customers"])
     customer_affected = normalized_customer_id in affected_customers if normalized_customer_id else None
     end_time = row["end_time"]
-    outage_cleared = end_time is not None and datetime.fromisoformat(end_time) <= checked_at
+    outage_cleared = end_time is not None and datetime.fromisoformat(
+        end_time) <= checked_at
     return OutageStatus(
         location=row["location"],
         customer_id=normalized_customer_id,
@@ -582,7 +587,8 @@ def check_outage_status(
         outage_id=row["outage_id"],
         start_time=row["start_time"],
         end_time=end_time,
-        duration_hours=float(row["duration_hours"]) if row["duration_hours"] is not None else None,
+        duration_hours=float(
+            row["duration_hours"]) if row["duration_hours"] is not None else None,
         affected_customers=affected_customers,
         customer_affected=customer_affected,
         outage_cleared=outage_cleared,
@@ -636,7 +642,8 @@ def run_router_diagnostic(
         ).to_dict()
 
     diagnostic_available = row["router_status"] is not None
-    signal_strength = int(row["signal_strength"]) if row["signal_strength"] is not None else None
+    signal_strength = int(row["signal_strength"]
+                          ) if row["signal_strength"] is not None else None
     diagnostic_failure = bool(
         diagnostic_available
         and (
@@ -678,7 +685,8 @@ def retrieve_policy(
     if top_k < 1:
         raise ValueError("top_k must be at least 1")
 
-    document = _find_policy_document(normalized_policy_name, policy_dir=policy_dir)
+    document = _find_policy_document(
+        normalized_policy_name, policy_dir=policy_dir)
     if document is None:
         return None
 
@@ -686,8 +694,10 @@ def retrieve_policy(
     if not normalized_query:
         raise ValueError("query must not be empty when provided")
 
-    retrieve_decision = decide_policy_retrieval(normalized_query, llm_client=llm_client)
-    relevance = evaluate_policy_relevance(normalized_query, document.text, llm_client=llm_client)
+    retrieve_decision = decide_policy_retrieval(
+        normalized_query, llm_client=llm_client)
+    relevance = evaluate_policy_relevance(
+        normalized_query, document.text, llm_client=llm_client)
     evidence_strips = _top_policy_evidence_strips(
         query=normalized_query,
         document=document,
@@ -723,7 +733,8 @@ def apply_credit(
     normalized_customer_id = customer_id.strip()
     normalized_reason = " ".join(reason.split())
     normalized_policy_name = policy_name.strip()
-    normalized_invoice_id = applied_to_invoice.strip() if isinstance(applied_to_invoice, str) else None
+    normalized_invoice_id = applied_to_invoice.strip(
+    ) if isinstance(applied_to_invoice, str) else None
     numeric_amount = float(amount)
 
     if not normalized_customer_id:
@@ -833,7 +844,8 @@ def create_ticket(
     normalized_issue_type = issue_type.strip()
     normalized_priority = priority.strip()
     normalized_status = status.strip()
-    normalized_policy_name = policy_name.strip() if isinstance(policy_name, str) else None
+    normalized_policy_name = policy_name.strip(
+    ) if isinstance(policy_name, str) else None
 
     if not normalized_customer_id:
         raise ValueError("customer_id must not be empty")
@@ -842,7 +854,8 @@ def create_ticket(
     if normalized_priority not in {"low", "medium", "high", "critical"}:
         raise ValueError("priority must be one of low, medium, high, critical")
     if normalized_status not in {"open", "in_progress", "resolved", "escalated"}:
-        raise ValueError("status must be one of open, in_progress, resolved, escalated")
+        raise ValueError(
+            "status must be one of open, in_progress, resolved, escalated")
     if policy_name is not None and not normalized_policy_name:
         raise ValueError("policy_name must not be empty when provided")
     if policy_context is not None and not isinstance(policy_context, dict):
@@ -851,7 +864,8 @@ def create_ticket(
     validation = None
     if normalized_policy_name is not None:
         if policy_context is None:
-            raise ValueError("policy_context must be provided when policy_name is provided")
+            raise ValueError(
+                "policy_context must be provided when policy_name is provided")
         validation = PolicyGraphValidator().authorize_action(
             normalized_policy_name,
             "create_ticket",
@@ -1024,7 +1038,8 @@ def schedule_technician(
         customer_id=normalized_customer_id,
         time_slot=normalized_time_slot,
         slot_confirmed=True,
-        technician_name=_technician_name_for(normalized_customer_id, normalized_time_slot),
+        technician_name=_technician_name_for(
+            normalized_customer_id, normalized_time_slot),
         ticket_id=normalized_ticket_id,
         ticket_created=ticket_created,
         ticket_status=ticket_status,
@@ -1065,7 +1080,8 @@ def change_plan(
         "change_plan",
         policy_context,
     )
-    effective_policy = str(validation.action_args.get("effective", "next_billing_cycle"))
+    effective_policy = str(validation.action_args.get(
+        "effective", "next_billing_cycle"))
     normalized_effective_date = _resolve_plan_effective_date(
         effective_date=effective_date,
         effective_policy=effective_policy,
@@ -1105,7 +1121,8 @@ def change_plan(
         if new_plan_row is None:
             raise ValueError(f"plan {normalized_new_plan_id!r} not found")
         if customer_row["previous_plan_id"] == normalized_new_plan_id:
-            raise ValueError(f"customer {normalized_customer_id!r} is already on plan {normalized_new_plan_id!r}")
+            raise ValueError(
+                f"customer {normalized_customer_id!r} is already on plan {normalized_new_plan_id!r}")
 
         change_type = _plan_change_type(
             previous_price=float(customer_row["previous_monthly_price"]),
@@ -1129,7 +1146,8 @@ def change_plan(
             (normalized_new_plan_id, normalized_customer_id),
         )
 
-    fee_disclosure_required = bool(validation.action_args.get("fee_disclosure_required", False))
+    fee_disclosure_required = bool(
+        validation.action_args.get("fee_disclosure_required", False))
     return PlanChangeResult(
         customer_id=normalized_customer_id,
         previous_plan_id=customer_row["previous_plan_id"],
@@ -1143,7 +1161,8 @@ def change_plan(
         change_type=change_type,
         effective_date=normalized_effective_date,
         fee_disclosure_required=fee_disclosure_required,
-        cancellation_fee=float(customer_row["previous_cancellation_fee"]) if fee_disclosure_required else 0.0,
+        cancellation_fee=float(
+            customer_row["previous_cancellation_fee"]) if fee_disclosure_required else 0.0,
         changed_at=changed_at,
         policy_name=validation.policy_name,
         policy_action=validation.action,
@@ -1200,7 +1219,8 @@ def generate_context_card(
     db_path: Path = DEFAULT_DB_PATH,
 ) -> dict | None:
     normalized_session_id = conversation_id.strip()
-    normalized_handoff_reason = " ".join(handoff_reason.split()) if isinstance(handoff_reason, str) else None
+    normalized_handoff_reason = " ".join(
+        handoff_reason.split()) if isinstance(handoff_reason, str) else None
     if not normalized_session_id:
         raise ValueError("conversation_id must not be empty")
     if handoff_reason is not None and not normalized_handoff_reason:
@@ -1287,24 +1307,36 @@ def generate_context_card(
         ).fetchall()
 
     messages = _json_value(conversation_row["messages"], [])
-    intents = [str(intent) for intent in _json_value(conversation_row["intents"], [])]
+    intents = [str(intent)
+               for intent in _json_value(conversation_row["intents"], [])]
     slots = _json_value(conversation_row["slots"], {})
-    conversation_tools = _normalize_tool_calls(_json_value(conversation_row["tools_called"], []))
-    audit_tools = _normalize_tool_calls(_json_value(audit_row["tools_called"], []) if audit_row else [])
+    conversation_tools = _normalize_tool_calls(
+        _json_value(conversation_row["tools_called"], []))
+    audit_tools = _normalize_tool_calls(_json_value(
+        audit_row["tools_called"], []) if audit_row else [])
     tools_called = _dedupe_dicts(conversation_tools + audit_tools, key="name")
-    evidence_used = _json_value(audit_row["evidence_used"], []) if audit_row else []
-    actions_taken = _json_value(audit_row["action_taken"], []) if audit_row else []
-    policy_nodes_visited = [str(node) for node in (_json_value(audit_row["policy_dag_path"], []) if audit_row else [])]
-    policy_dag_path_so_far = _policy_dag_path_so_far(policy_nodes_visited, audit_row)
+    evidence_used = _json_value(
+        audit_row["evidence_used"], []) if audit_row else []
+    actions_taken = _json_value(
+        audit_row["action_taken"], []) if audit_row else []
+    policy_nodes_visited = [str(node) for node in (_json_value(
+        audit_row["policy_dag_path"], []) if audit_row else [])]
+    policy_dag_path_so_far = _policy_dag_path_so_far(
+        policy_nodes_visited, audit_row)
     health_scores = _json_value(conversation_row["health_scores"], [])
     latest_health_score = _latest_numeric(health_scores)
     if latest_health_score is None and audit_row and audit_row["health_score"] is not None:
         latest_health_score = float(audit_row["health_score"])
-    emotion, urgency = _handoff_emotion(latest_health_score, conversation_row["relationship_score_end"])
-    issues_detected = _handoff_issues(intents, actions_taken, conversation_row["final_status"])
-    issues_resolved = [issue for issue in issues_detected if issue["status"] == "resolved"]
-    issues_remaining = [issue for issue in issues_detected if issue["status"] != "resolved"]
-    issues_summary = _issues_summary(issues_detected, issues_resolved, issues_remaining)
+    emotion, urgency = _handoff_emotion(
+        latest_health_score, conversation_row["relationship_score_end"])
+    issues_detected = _handoff_issues(
+        intents, actions_taken, conversation_row["final_status"])
+    issues_resolved = [
+        issue for issue in issues_detected if issue["status"] == "resolved"]
+    issues_remaining = [
+        issue for issue in issues_detected if issue["status"] != "resolved"]
+    issues_summary = _issues_summary(
+        issues_detected, issues_resolved, issues_remaining)
     reason = normalized_handoff_reason or _default_handoff_reason(
         final_status=conversation_row["final_status"],
         audit_row=audit_row,
@@ -1389,7 +1421,8 @@ def generate_opening_line(
     if context_card is not None:
         if not isinstance(context_card, dict):
             raise ValueError("context_card must be a dict when provided")
-        normalized_reason = _normalize_optional_text(handoff_reason, "handoff_reason")
+        normalized_reason = _normalize_optional_text(
+            handoff_reason, "handoff_reason")
         return _opening_line_result(context_card, handoff_reason=normalized_reason)
 
     if conversation_id is None:
@@ -1441,12 +1474,14 @@ def build_audit_log(
     evidence_payload = _dedupe_payloads(
         _json_ready_list(evidence_used or [], "evidence_used")
         + _evidence_from_tool_results(tool_result_payloads)
-        + _json_ready_list(context_payload.get("evidence_used", []), "context_card.evidence_used")
+        + _json_ready_list(context_payload.get("evidence_used",
+                           []), "context_card.evidence_used")
     )
     actions_payload = _dedupe_payloads(
         _json_ready_list(action_taken or [], "action_taken")
         + _actions_from_tool_results(tool_result_payloads)
-        + _json_ready_list(context_payload.get("actions_taken", []), "context_card.actions_taken")
+        + _json_ready_list(context_payload.get("actions_taken",
+                           []), "context_card.actions_taken")
     )
     path_payload = _audit_policy_path(
         explicit_path=policy_dag_path,
@@ -1474,7 +1509,8 @@ def build_audit_log(
         maximum=1,
     )
     resolved_health_score = _optional_float_in_range(
-        _first_not_none(health_score, context_payload.get("current_health_score"), _audit_context_value(context_payload, "health_score")),
+        _first_not_none(health_score, context_payload.get(
+            "current_health_score"), _audit_context_value(context_payload, "health_score")),
         "health_score",
         minimum=0,
         maximum=100,
@@ -1736,7 +1772,7 @@ def _detect_duplicate_payment_groups(payments: list[dict], invoices: list[dict])
     groups = []
     used_pairs = set()
     for left_index, left in enumerate(payments):
-        for right in payments[left_index + 1 :]:
+        for right in payments[left_index + 1:]:
             pair_key = tuple(sorted((left["payment_id"], right["payment_id"])))
             if pair_key in used_pairs:
                 continue
@@ -1744,7 +1780,8 @@ def _detect_duplicate_payment_groups(payments: list[dict], invoices: list[dict])
                 continue
             if left["method"] != right["method"]:
                 continue
-            minutes_apart = abs((right["timestamp"] - left["timestamp"]).total_seconds()) / 60
+            minutes_apart = abs(
+                (right["timestamp"] - left["timestamp"]).total_seconds()) / 60
             if minutes_apart > 10:
                 continue
 
@@ -1754,7 +1791,8 @@ def _detect_duplicate_payment_groups(payments: list[dict], invoices: list[dict])
                 if invoice["amount"] == left["amount"]
                 and invoice["date"] == left["timestamp"].date().isoformat()
             ]
-            invoice_id = matching_invoices[0]["invoice_id"] if len(matching_invoices) == 1 else None
+            invoice_id = matching_invoices[0]["invoice_id"] if len(
+                matching_invoices) == 1 else None
             groups.append(
                 {
                     "payment_ids": [left["payment_id"], right["payment_id"]],
@@ -1770,7 +1808,8 @@ def _detect_duplicate_payment_groups(payments: list[dict], invoices: list[dict])
                         "same payment amount",
                         "same payment method",
                         "payment timestamps within 10 minutes",
-                        "single matching invoice" if len(matching_invoices) == 1 else "matching invoice not unique",
+                        "single matching invoice" if len(
+                            matching_invoices) == 1 else "matching invoice not unique",
                     ],
                 }
             )
@@ -1877,7 +1916,8 @@ def _tools_from_tool_results(tool_results: list) -> list:
         name = _clean_tool_name(payload)
         if not name:
             continue
-        entry = {"tool_name": name, "status": str(payload.get("status") or "ok")}
+        entry = {"tool_name": name, "status": str(
+            payload.get("status") or "ok")}
         args = payload.get("args") or payload.get("arguments")
         if isinstance(args, dict):
             entry["args"] = args
@@ -1889,7 +1929,8 @@ def _tools_from_tool_results(tool_results: list) -> list:
 
 
 def _clean_tool_name(payload: dict) -> str | None:
-    value = payload.get("tool_name") or payload.get("name") or payload.get("tool")
+    value = payload.get("tool_name") or payload.get(
+        "name") or payload.get("tool")
     if value is None:
         return None
     normalized = str(value).strip()
@@ -1936,7 +1977,8 @@ def _actions_from_tool_results(tool_results: list) -> list:
             actions.extend(_list_field(source, "actions"))
             action = source.get("action")
             if action:
-                actions.append(action if isinstance(action, dict) else {"action": str(action)})
+                actions.append(action if isinstance(action, dict)
+                               else {"action": str(action)})
     return actions
 
 
@@ -1962,7 +2004,8 @@ def _audit_policy_path(*, explicit_path, policy_payload: dict, tool_results: lis
             path = _path_from_payload(source)
             if path:
                 return path
-    policy_path = _payload_dict(context_card.get("policy_dag_path_so_far")).get("nodes")
+    policy_path = _payload_dict(context_card.get(
+        "policy_dag_path_so_far")).get("nodes")
     if isinstance(policy_path, list):
         return [str(node) for node in policy_path]
     raw_nodes = context_card.get("policy_nodes_visited")
@@ -2047,7 +2090,8 @@ def _normalize_policy_status(value, ujcs: float | None) -> str:
     if normalized is None:
         normalized = _policy_status_from_ujcs(ujcs)
     if normalized not in {"pending", "compliant", "non_compliant", "needs_review"}:
-        raise ValueError("policy_status must be one of pending, compliant, non_compliant, needs_review")
+        raise ValueError(
+            "policy_status must be one of pending, compliant, non_compliant, needs_review")
     return normalized
 
 
@@ -2059,7 +2103,8 @@ def _optional_float_in_range(value, field_name: str, *, minimum: float, maximum:
     except (TypeError, ValueError) as exc:
         raise ValueError(f"{field_name} must be numeric") from exc
     if numeric < minimum or numeric > maximum:
-        raise ValueError(f"{field_name} must be between {minimum:g} and {maximum:g}")
+        raise ValueError(
+            f"{field_name} must be between {minimum:g} and {maximum:g}")
     return numeric
 
 
@@ -2120,7 +2165,8 @@ def _policy_status_from_ujcs(ujcs: float | None) -> str:
 
 
 def _audit_human_summary(raw_json: dict) -> str:
-    tools = ", ".join(_tool_names_for_summary(raw_json["tools_called"])) or "no tools recorded"
+    tools = ", ".join(_tool_names_for_summary(
+        raw_json["tools_called"])) or "no tools recorded"
     evidence_count = len(raw_json["evidence_used"])
     action_count = len(raw_json["action_taken"])
     ujcs_text = "not computed" if raw_json["ujcs"] is None else f"{raw_json['ujcs']:.4f}"
@@ -2138,7 +2184,8 @@ def _tool_names_for_summary(tools_called: list) -> list[str]:
         if isinstance(item, str):
             names.append(item)
         elif isinstance(item, dict):
-            name = item.get("name") or item.get("tool_name") or item.get("tool")
+            name = item.get("name") or item.get(
+                "tool_name") or item.get("tool")
             if name:
                 names.append(str(name))
     return names
@@ -2156,7 +2203,8 @@ def _normalize_tool_calls(raw_tools) -> list[dict]:
             continue
         if not isinstance(item, dict):
             continue
-        name = str(item.get("tool_name") or item.get("name") or item.get("tool") or "").strip()
+        name = str(item.get("tool_name") or item.get(
+            "name") or item.get("tool") or "").strip()
         if not name:
             continue
         entry = {"name": name}
@@ -2314,7 +2362,8 @@ def _opening_line_result(context_card: dict, *, handoff_reason: str | None = Non
     issues_remaining = context_card.get("issues_remaining")
     if not isinstance(issues_remaining, list):
         issues_remaining = []
-    reason = handoff_reason or context_card.get("reason_for_escalation") or "Customer needs specialist support."
+    reason = handoff_reason or context_card.get(
+        "reason_for_escalation") or "Customer needs specialist support."
     reason = str(reason).strip() or "Customer needs specialist support."
     customer_name = _clean_text(customer.get("name"))
     customer_id = _clean_text(customer.get("customer_id"))
@@ -2415,10 +2464,12 @@ def _find_policy_document(policy_name: str, *, policy_dir: Path) -> PolicyDocume
 
 
 def _top_policy_evidence_strips(*, query: str, document: PolicyDocument, top_k: int, llm_client: Callable[[str], str] | None = None) -> list[dict]:
-    strips = decompose_policy_to_strips(document.text, source_id=document.policy_id)
+    strips = decompose_policy_to_strips(
+        document.text, source_id=document.policy_id)
     scored = []
     for strip in strips:
-        evaluation = evaluate_policy_relevance(query, strip.text, llm_client=llm_client)
+        evaluation = evaluate_policy_relevance(
+            query, strip.text, llm_client=llm_client)
         scored.append(
             {
                 "strip_id": strip.strip_id,
@@ -2442,8 +2493,10 @@ def _policy_lookup_key(value: str) -> str:
 
 
 def _technician_name_for(customer_id: str, time_slot: str) -> str:
-    technician_names = ["Aarav Mehta", "Neha Rao", "Imran Khan", "Priya Menon", "Rohan Iyer"]
-    index = sum(ord(character) for character in f"{customer_id}|{time_slot}") % len(technician_names)
+    technician_names = ["Aarav Mehta", "Neha Rao",
+                        "Imran Khan", "Priya Menon", "Rohan Iyer"]
+    index = sum(ord(character)
+                for character in f"{customer_id}|{time_slot}") % len(technician_names)
     return technician_names[index]
 
 

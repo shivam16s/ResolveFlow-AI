@@ -9,7 +9,8 @@ from typing import Any
 from backend.db.init_db import DEFAULT_DB_PATH
 
 
-DEFAULT_EVALUATION_SCENARIOS_PATH = Path(__file__).resolve().parents[2] / "docs" / "evaluation_scenarios.json"
+DEFAULT_EVALUATION_SCENARIOS_PATH = Path(__file__).resolve(
+).parents[2] / "docs" / "evaluation_scenarios.json"
 
 EXPECTED_SCENARIO_IDS = [
     "case_01_simple_bill_question",
@@ -79,7 +80,8 @@ def validate_evaluation_scenarios(
 
     scenario_ids = [scenario.scenario_id for scenario in scenarios]
     if scenario_ids != EXPECTED_SCENARIO_IDS:
-        problems.append(f"expected scenario ids {EXPECTED_SCENARIO_IDS}, found {scenario_ids}")
+        problems.append(
+            f"expected scenario ids {EXPECTED_SCENARIO_IDS}, found {scenario_ids}")
     if len(set(scenario_ids)) != len(scenario_ids):
         problems.append("scenario ids must be unique")
 
@@ -131,12 +133,14 @@ def _validate_scenario(scenario: EvaluationScenario, connection: sqlite3.Connect
     else:
         expected_customer = initial_state.get("customer")
         if not isinstance(expected_customer, dict):
-            problems.append(prefix + "initial_state.customer must be an object")
+            problems.append(
+                prefix + "initial_state.customer must be an object")
         else:
             for field_name in ("customer_id", "account_status", "plan_id", "risk_level"):
                 expected = expected_customer.get(field_name)
                 if expected is None:
-                    problems.append(prefix + f"initial_state.customer.{field_name} is required")
+                    problems.append(
+                        prefix + f"initial_state.customer.{field_name} is required")
                     continue
                 if str(customer[field_name]) != str(expected):
                     problems.append(
@@ -145,15 +149,18 @@ def _validate_scenario(scenario: EvaluationScenario, connection: sqlite3.Connect
                     )
 
     if initial_state.get("db_reset_required") is not True:
-        problems.append(prefix + "initial_state.db_reset_required must be true")
+        problems.append(
+            prefix + "initial_state.db_reset_required must be true")
     if not _required_nested_text(initial_state, "scenario_date"):
         problems.append(prefix + "initial_state.scenario_date is required")
 
     seed_evidence = initial_state.get("seed_evidence")
     if not isinstance(seed_evidence, dict):
-        problems.append(prefix + "initial_state.seed_evidence must be an object")
+        problems.append(
+            prefix + "initial_state.seed_evidence must be an object")
     else:
-        problems.extend(_validate_references(prefix, seed_evidence, connection))
+        problems.extend(_validate_references(
+            prefix, seed_evidence, connection))
 
     expected_final_status = goal_state.get("expected_final_status")
     if expected_final_status not in {"active", "ask", "resolved", "escalated", "abandoned"}:
@@ -169,13 +176,16 @@ def _validate_scenario(scenario: EvaluationScenario, connection: sqlite3.Connect
         if not isinstance(goal_state.get(field_name), list):
             problems.append(prefix + f"goal_state.{field_name} must be a list")
     if not isinstance(goal_state.get("expected_artifacts"), dict):
-        problems.append(prefix + "goal_state.expected_artifacts must be an object")
+        problems.append(
+            prefix + "goal_state.expected_artifacts must be an object")
     if not goal_state.get("success_criteria"):
-        problems.append(prefix + "goal_state.success_criteria must not be empty")
+        problems.append(
+            prefix + "goal_state.success_criteria must not be empty")
 
     context = initial_state.get("conversation_context", [])
     if not isinstance(context, list):
-        problems.append(prefix + "initial_state.conversation_context must be a list")
+        problems.append(
+            prefix + "initial_state.conversation_context must be a list")
     return problems
 
 
@@ -188,7 +198,8 @@ def _validate_references(prefix: str, seed_evidence: dict, connection: sqlite3.C
     ):
         references = seed_evidence.get(field_name)
         if not isinstance(references, list):
-            problems.append(prefix + f"initial_state.seed_evidence.{field_name} must be a list")
+            problems.append(
+                prefix + f"initial_state.seed_evidence.{field_name} must be a list")
             continue
         for reference_id in references:
             exists = connection.execute(
@@ -196,7 +207,8 @@ def _validate_references(prefix: str, seed_evidence: dict, connection: sqlite3.C
                 (str(reference_id),),
             ).fetchone()
             if exists is None:
-                problems.append(prefix + f"{table_name} reference {reference_id!r} not found")
+                problems.append(
+                    prefix + f"{table_name} reference {reference_id!r} not found")
     return problems
 
 

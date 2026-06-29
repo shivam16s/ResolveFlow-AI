@@ -76,15 +76,21 @@ def validate_foundation_assets(
                 problems.append(f"missing tables: {missing_tables}")
 
             row_counts = {
-                table: connection.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
+                table: connection.execute(
+                    f"SELECT COUNT(*) FROM {table}").fetchone()[0]
                 for table in sorted(EXPECTED_TABLES & table_names)
             }
-            verified_count = _count_where(connection, "outages", "verified = 1", table_names)
-            unverified_count = _count_where(connection, "outages", "verified = 0", table_names)
-            duplicate_customers = _duplicate_charge_customers(connection, table_names)
+            verified_count = _count_where(
+                connection, "outages", "verified = 1", table_names)
+            unverified_count = _count_where(
+                connection, "outages", "verified = 0", table_names)
+            duplicate_customers = _duplicate_charge_customers(
+                connection, table_names)
 
-    policy_doc_count = len(list(policies_dir.glob("*.md"))) if policies_dir.exists() else 0
-    scenario_count = len(list(scenarios_dir.glob("case_*.json"))) if scenarios_dir.exists() else 0
+    policy_doc_count = len(list(policies_dir.glob("*.md"))
+                           ) if policies_dir.exists() else 0
+    scenario_count = len(list(scenarios_dir.glob(
+        "case_*.json"))) if scenarios_dir.exists() else 0
     _expect_count(row_counts, "customers", 20, problems)
     _expect_count(row_counts, "invoices", 20, problems)
     if row_counts.get("payments", 0) < 20:
@@ -97,7 +103,8 @@ def validate_foundation_assets(
     if policy_doc_count != 8:
         problems.append(f"expected 8 policy docs, found {policy_doc_count}")
     if scenario_count != 20:
-        problems.append(f"expected 20 scenario scripts, found {scenario_count}")
+        problems.append(
+            f"expected 20 scenario scripts, found {scenario_count}")
 
     return FoundationValidationReport(
         ok=not problems,

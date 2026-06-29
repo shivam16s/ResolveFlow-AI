@@ -121,7 +121,8 @@ def detect_handoff_triggers(
     if health_trigger is not None:
         triggers.append(health_trigger)
 
-    anger_trigger = _anger_trigger(sentiment=sentiment, messages=messages, user_message=user_message)
+    anger_trigger = _anger_trigger(
+        sentiment=sentiment, messages=messages, user_message=user_message)
     if anger_trigger is not None:
         triggers.append(anger_trigger)
 
@@ -141,16 +142,19 @@ def detect_handoff_triggers(
     if refund_trigger is not None:
         triggers.append(refund_trigger)
 
-    request_trigger = _explicit_request_trigger(user_message=user_message, handoff_requested=handoff_requested)
+    request_trigger = _explicit_request_trigger(
+        user_message=user_message, handoff_requested=handoff_requested)
     if request_trigger is not None:
         triggers.append(request_trigger)
 
-    triggers = sorted(triggers, key=lambda trigger: TRIGGER_ORDER.index(trigger.code))
+    triggers = sorted(
+        triggers, key=lambda trigger: TRIGGER_ORDER.index(trigger.code))
     return HandoffTriggerDetection(
         should_handoff=bool(triggers),
         triggers=triggers,
         trigger_codes=[trigger.code for trigger in triggers],
-        highest_severity=_highest_severity(trigger.severity for trigger in triggers),
+        highest_severity=_highest_severity(
+            trigger.severity for trigger in triggers),
     )
 
 
@@ -168,7 +172,8 @@ def insert_human_handoff_queue(
     if not isinstance(context_card, dict):
         raise ValueError("context_card must be a dict")
     try:
-        context_json = json.dumps(context_card, ensure_ascii=True, sort_keys=True)
+        context_json = json.dumps(
+            context_card, ensure_ascii=True, sort_keys=True)
     except (TypeError, ValueError) as exc:
         raise ValueError("context_card must be JSON serializable") from exc
 
@@ -176,7 +181,8 @@ def insert_human_handoff_queue(
     with sqlite3.connect(db_path) as connection:
         connection.execute("PRAGMA foreign_keys = ON")
         connection.row_factory = sqlite3.Row
-        _validate_handoff_references(connection, normalized_case_id, normalized_customer_id)
+        _validate_handoff_references(
+            connection, normalized_case_id, normalized_customer_id)
 
         existing = connection.execute(
             """
@@ -295,9 +301,12 @@ def log_handoff_event_to_audit(
     normalized_customer_id = _require_text(customer_id, "customer_id")
     normalized_session_id = _require_text(session_id, "session_id")
     queue_payload = _object_payload(queue_entry)
-    handoff_id = _require_text(queue_payload.get("handoff_id"), "queue_entry.handoff_id")
-    queue_status = _require_text(queue_payload.get("status"), "queue_entry.status")
-    handoff_reason = _require_text(queue_payload.get("handoff_reason"), "queue_entry.handoff_reason")
+    handoff_id = _require_text(queue_payload.get(
+        "handoff_id"), "queue_entry.handoff_id")
+    queue_status = _require_text(
+        queue_payload.get("status"), "queue_entry.status")
+    handoff_reason = _require_text(queue_payload.get(
+        "handoff_reason"), "queue_entry.handoff_reason")
     context_card = queue_payload.get("context_card")
     if not isinstance(context_card, dict):
         context_card = {}
@@ -312,12 +321,16 @@ def log_handoff_event_to_audit(
 
     existing = _existing_audit_payload(db_path, normalized_case_id)
     tools_payload = _list_or_existing(tools_called, existing, "tools_called")
-    evidence_payload = _list_or_existing(evidence_used, existing, "evidence_used")
+    evidence_payload = _list_or_existing(
+        evidence_used, existing, "evidence_used")
     actions_payload = _list_or_existing(action_taken, existing, "action_taken")
-    path_payload = _list_or_existing(policy_dag_path, existing, "policy_dag_path")
+    path_payload = _list_or_existing(
+        policy_dag_path, existing, "policy_dag_path")
     resolved_ujcs = ujcs if ujcs is not None else existing.get("ujcs")
-    resolved_policy_status = policy_status if policy_status is not None else existing.get("policy_status")
-    resolved_health_score = health_score if health_score is not None else existing.get("health_score")
+    resolved_policy_status = policy_status if policy_status is not None else existing.get(
+        "policy_status")
+    resolved_health_score = health_score if health_score is not None else existing.get(
+        "health_score")
 
     handoff_tool = {
         "tool_name": "human_handoff",
@@ -376,9 +389,11 @@ def _policy_exception_trigger(policy_result: Any) -> HandoffTrigger | None:
     if policy_result is None:
         return None
     payload = _object_payload(policy_result)
-    action = _payload_text(payload, "action", "policy_action", "recommended_action", "leaf_action")
+    action = _payload_text(payload, "action", "policy_action",
+                           "recommended_action", "leaf_action")
     status = _payload_text(payload, "policy_status", "status", "result")
-    reason = _payload_text(payload, "reason", "handoff_reason", "message", default="Policy exception requires review.")
+    reason = _payload_text(payload, "reason", "handoff_reason",
+                           "message", default="Policy exception requires review.")
     exception_flag = bool(
         payload.get("policy_exception")
         or payload.get("exception")
@@ -395,7 +410,8 @@ def _policy_exception_trigger(policy_result: Any) -> HandoffTrigger | None:
             label="Policy exception",
             severity="high",
             reason=reason,
-            evidence=_compact_evidence(payload, ("policy_name", "policy_status", "status", "action", "reason")),
+            evidence=_compact_evidence(
+                payload, ("policy_name", "policy_status", "status", "action", "reason")),
         )
     return None
 
@@ -417,10 +433,12 @@ def _anger_trigger(*, sentiment: Any, messages: list[dict[str, object]] | None, 
     component = sentiment
     if component is None and messages:
         component = sentiment_score_component(messages)
-    label = _object_payload(component).get("label") if component is not None else None
+    label = _object_payload(component).get(
+        "label") if component is not None else None
     score = _score_value(component, maximum=1)
     text = _normalized_text(user_message)
-    anger_terms = ("angry", "furious", "terrible", "useless", "ridiculous", "hate this", "stop the bot")
+    anger_terms = ("angry", "furious", "terrible", "useless",
+                   "ridiculous", "hate this", "stop the bot")
     text_is_angry = any(term in text for term in anger_terms)
     if label == "angry" or (score is not None and score <= 0.1) or text_is_angry:
         return HandoffTrigger(
@@ -428,7 +446,8 @@ def _anger_trigger(*, sentiment: Any, messages: list[dict[str, object]] | None, 
             label="Customer anger",
             severity="high",
             reason="Customer sentiment indicates anger or hostile frustration.",
-            evidence={"sentiment_label": label, "sentiment_score": score, "matched_text": text_is_angry},
+            evidence={"sentiment_label": label,
+                      "sentiment_score": score, "matched_text": text_is_angry},
         )
     return None
 
@@ -474,9 +493,11 @@ def _tool_failure_trigger(tool_calls: list[Any]) -> HandoffTrigger | None:
     failed = []
     for item in tool_calls:
         payload = _object_payload(item)
-        name = str(payload.get("tool_name") or payload.get("name") or payload.get("tool") or "unknown").strip()
+        name = str(payload.get("tool_name") or payload.get("name")
+                   or payload.get("tool") or "unknown").strip()
         if not _tool_call_successful(payload):
-            failed.append({"name": name, "status": payload.get("status"), "error": payload.get("error")})
+            failed.append({"name": name, "status": payload.get(
+                "status"), "error": payload.get("error")})
     if not failed:
         return None
     return HandoffTrigger(
@@ -523,7 +544,8 @@ def _explicit_request_trigger(*, user_message: str | None, handoff_requested: bo
         label="Explicit human request",
         severity="critical",
         reason="Customer explicitly requested a human or escalation.",
-        evidence={"handoff_requested": bool(handoff_requested), "message": user_message},
+        evidence={"handoff_requested": bool(
+            handoff_requested), "message": user_message},
     )
 
 
@@ -545,7 +567,8 @@ def _validate_handoff_references(
     if audit_row is None:
         raise ValueError(f"audit case {case_id!r} not found")
     if audit_row["customer_id"] != customer_id:
-        raise ValueError(f"audit case {case_id!r} does not belong to customer {customer_id!r}")
+        raise ValueError(
+            f"audit case {case_id!r} does not belong to customer {customer_id!r}")
 
 
 def _handoff_queue_entry_from_row(row: sqlite3.Row, *, inserted: bool) -> HandoffQueueEntry:

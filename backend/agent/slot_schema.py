@@ -19,12 +19,15 @@ class SlotDefinition:
         name = self.name.strip()
         value_type = self.value_type.strip()
         prompt = self.prompt.strip()
-        aliases = tuple(alias.strip() for alias in self.aliases if alias.strip())
-        examples = tuple(example.strip() for example in self.examples if example.strip())
+        aliases = tuple(alias.strip()
+                        for alias in self.aliases if alias.strip())
+        examples = tuple(example.strip()
+                         for example in self.examples if example.strip())
         if not name:
             raise ValueError("slot name must not be empty")
         if value_type not in {"string", "money", "datetime", "boolean"}:
-            raise ValueError("slot value_type must be one of string, money, datetime, boolean")
+            raise ValueError(
+                "slot value_type must be one of string, money, datetime, boolean")
         if self.priority < 1:
             raise ValueError("slot priority must be at least 1")
         if not prompt:
@@ -54,9 +57,11 @@ class IntentSlotSchema:
         if intent not in ALLOWED_INTENTS:
             raise ValueError(f"unknown intent for slot schema: {intent}")
         if not description:
-            raise ValueError("intent slot schema description must not be empty")
+            raise ValueError(
+                "intent slot schema description must not be empty")
         if not self.slots:
-            raise ValueError("intent slot schema must define at least one slot")
+            raise ValueError(
+                "intent slot schema must define at least one slot")
         slot_names = [slot.name for slot in self.slots]
         if len(slot_names) != len(set(slot_names)):
             raise ValueError(f"duplicate slot names for intent {intent}")
@@ -386,11 +391,14 @@ def validate_slot_schema() -> None:
     missing = set(ALLOWED_INTENTS) - set(SLOT_SCHEMA)
     extra = set(SLOT_SCHEMA) - set(ALLOWED_INTENTS)
     if missing or extra:
-        raise ValueError(f"slot schema mismatch; missing={sorted(missing)}, extra={sorted(extra)}")
+        raise ValueError(
+            f"slot schema mismatch; missing={sorted(missing)}, extra={sorted(extra)}")
     for schema in SLOT_SCHEMA.values():
-        required_priorities = [slot.priority for slot in schema.slots if slot.required]
+        required_priorities = [
+            slot.priority for slot in schema.slots if slot.required]
         if required_priorities != sorted(required_priorities):
-            raise ValueError(f"required slots are not priority ordered for {schema.intent}")
+            raise ValueError(
+                f"required slots are not priority ordered for {schema.intent}")
 
 
 def _slot_value_present(value: object) -> bool:

@@ -84,7 +84,8 @@ class IssueQueue:
 
 
 def build_issue_queue(classification: IntentClassification | Iterable[str]) -> IssueQueue:
-    intents = classification.intents if isinstance(classification, IntentClassification) else list(classification)
+    intents = classification.intents if isinstance(
+        classification, IntentClassification) else list(classification)
     normalized_intents = _normalize_queue_intents(intents)
     issues = [
         Issue(
@@ -105,7 +106,8 @@ def slot_progress_for_issue(issue: Issue, slots: dict[str, object] | None = None
         for slot in issue.required_slots
         if _slot_has_value(slots.get(slot))
     }
-    missing_slots = [missing.slot for missing in detect_missing_required_slots(issue.intent, slots)]
+    missing_slots = [
+        missing.slot for missing in detect_missing_required_slots(issue.intent, slots)]
     return SlotProgress(
         intent=issue.intent,
         required_slots=list(issue.required_slots),
@@ -125,7 +127,8 @@ def _normalize_queue_intents(intents: Iterable[str]) -> list[str]:
         unique_intents.append(intent)
 
     if "duplicate_charge" in unique_intents:
-        unique_intents = [intent for intent in unique_intents if intent != "billing_dispute"]
+        unique_intents = [
+            intent for intent in unique_intents if intent != "billing_dispute"]
 
     if not unique_intents:
         unique_intents = ["general_query"]

@@ -98,7 +98,8 @@ def update_memory_graph(
         raise ValueError("memory_id must not be empty")
 
     normalized_triples = [_normalize_triple(triple) for triple in triples]
-    normalized_triples = [triple for triple in normalized_triples if triple is not None]
+    normalized_triples = [
+        triple for triple in normalized_triples if triple is not None]
     if not normalized_triples:
         initialize_memory_graph(connection)
         return MemoryGraphUpdate(customer_id=customer_id, memory_id=memory_id, nodes_upserted=0, edges_upserted=0)
@@ -112,8 +113,10 @@ def update_memory_graph(
         for triple in normalized_triples:
             subject_id = node_id_for_label(triple.subject)
             object_id = node_id_for_label(triple.object)
-            subject_type = infer_node_type(triple.subject, relation=triple.relation)
-            object_type = infer_node_type(triple.object, relation=triple.relation)
+            subject_type = infer_node_type(
+                triple.subject, relation=triple.relation)
+            object_type = infer_node_type(
+                triple.object, relation=triple.relation)
 
             _upsert_node(
                 connection,
@@ -160,7 +163,8 @@ def add_synonymy_edges(
     *,
     customer_id: str,
     threshold: float = 0.8,
-    embedding_function: Callable[[list[str]], Sequence[Sequence[float]]] | None = None,
+    embedding_function: Callable[[list[str]],
+                                 Sequence[Sequence[float]]] | None = None,
 ) -> SynonymyGraphUpdate:
     customer_id = customer_id.strip()
     if not customer_id:
@@ -182,7 +186,8 @@ def add_synonymy_edges(
     encoder = embedding_function or _default_embedding_function()
     embeddings = [list(map(float, vector)) for vector in encoder(labels)]
     if len(embeddings) != len(nodes):
-        raise ValueError("embedding_function must return one embedding per node label")
+        raise ValueError(
+            "embedding_function must return one embedding per node label")
 
     now = datetime.now(timezone.utc).isoformat()
     touched_edges: set[tuple[str, str]] = set()
@@ -190,7 +195,8 @@ def add_synonymy_edges(
     with connection:
         for left_index in range(len(nodes)):
             for right_index in range(left_index + 1, len(nodes)):
-                similarity = cosine_similarity(embeddings[left_index], embeddings[right_index])
+                similarity = cosine_similarity(
+                    embeddings[left_index], embeddings[right_index])
                 if similarity < threshold:
                     continue
 
@@ -244,7 +250,8 @@ def ppr_retrieve(
     damping: float = 0.5,
     query_node_ids: Iterable[str] | None = None,
     query_node_count: int = 2,
-    embedding_function: Callable[[list[str]], Sequence[Sequence[float]]] | None = None,
+    embedding_function: Callable[[list[str]],
+                                 Sequence[Sequence[float]]] | None = None,
     max_iterations: int = 50,
     tolerance: float = 1e-8,
 ) -> list[PPRMemoryResult]:
@@ -277,7 +284,8 @@ def ppr_retrieve(
     if not query_nodes:
         return []
 
-    personalization = _personalization_vector(nodes=nodes, node_index=node_index, query_nodes=query_nodes)
+    personalization = _personalization_vector(
+        nodes=nodes, node_index=node_index, query_nodes=query_nodes)
     if sum(personalization) == 0.0:
         return []
 
@@ -299,7 +307,8 @@ def ppr_retrieve(
             for index, node in enumerate(nodes)
             if memory_id in node["passages"] and node_scores[index] > 0.0
         ]
-        supporting_nodes.sort(key=lambda node_id: (-node_scores[node_index[node_id]], node_id))
+        supporting_nodes.sort(
+            key=lambda node_id: (-node_scores[node_index[node_id]], node_id))
         results.append(
             PPRMemoryResult(
                 memory_id=memory_id,
@@ -365,7 +374,8 @@ def node_id_for_label(label: str) -> str:
     normalized = re.sub(r"[^a-z0-9]+", "_", label.strip().lower())
     normalized = normalized.strip("_")
     if not normalized:
-        raise ValueError("node label must contain at least one alphanumeric character")
+        raise ValueError(
+            "node label must contain at least one alphanumeric character")
     return normalized[:120]
 
 
@@ -403,7 +413,8 @@ def _upsert_node(
             INSERT INTO memory_graph(customer_id, node_id, node_type, label, passages, edges, updated_at)
             VALUES (?, ?, ?, ?, ?, '[]', ?)
             """,
-            (customer_id, node_id, node_type, label, _json_dumps([memory_id]), updated_at),
+            (customer_id, node_id, node_type, label,
+             _json_dumps([memory_id]), updated_at),
         )
         return
 
@@ -416,7 +427,8 @@ def _upsert_node(
         SET passages = ?, node_type = ?, label = ?, updated_at = ?
         WHERE customer_id = ? AND node_id = ?
         """,
-        (_json_dumps(passages), stored_type, stored_label, updated_at, customer_id, node_id),
+        (_json_dumps(passages), stored_type,
+         stored_label, updated_at, customer_id, node_id),
     )
 
 
@@ -466,8 +478,10 @@ def _upsert_edge_values(
 
     edges = _loads_json_list(row[0])
     edge = _find_edge(edges, target_node_id=target_node_id, relation=relation)
-    clean_passages = _dedupe([str(passage) for passage in passages if str(passage).strip()])
-    clean_evidence = _dedupe([str(item) for item in evidence_items if str(item).strip()])[:5]
+    clean_passages = _dedupe([str(passage)
+                             for passage in passages if str(passage).strip()])
+    clean_evidence = _dedupe(
+        [str(item) for item in evidence_items if str(item).strip()])[:5]
     clean_weight = round(max(0.01, min(1.0, float(weight))), 4)
     if edge is None:
         edges.append(
@@ -493,7 +507,8 @@ def _upsert_edge_values(
         prior_weight = float(edge.get("weight", 0.0) or 0.0)
         edge["weight"] = round(max(prior_weight, clean_weight), 4)
 
-    edges.sort(key=lambda item: (str(item.get("relation", "")), str(item.get("target_node", ""))))
+    edges.sort(key=lambda item: (str(item.get("relation", "")),
+               str(item.get("target_node", ""))))
     connection.execute(
         """
         UPDATE memory_graph
@@ -555,7 +570,8 @@ def _find_edge(edges: list, *, target_node_id: str, relation: str) -> dict | Non
 def cosine_similarity(left: Sequence[float], right: Sequence[float]) -> float:
     if len(left) != len(right):
         raise ValueError("vectors must have the same dimension")
-    dot = sum(left_value * right_value for left_value, right_value in zip(left, right))
+    dot = sum(left_value * right_value for left_value,
+              right_value in zip(left, right))
     left_norm = math.sqrt(sum(value * value for value in left))
     right_norm = math.sqrt(sum(value * value for value in right))
     if left_norm == 0.0 or right_norm == 0.0:
@@ -591,9 +607,11 @@ def _resolve_query_nodes(
 
     labels = [node["label"] for node in nodes]
     encoder = embedding_function or _default_embedding_function()
-    embeddings = [list(map(float, vector)) for vector in encoder([query] + labels)]
+    embeddings = [list(map(float, vector))
+                  for vector in encoder([query] + labels)]
     if len(embeddings) != len(nodes) + 1:
-        raise ValueError("embedding_function must return one query embedding plus one embedding per node label")
+        raise ValueError(
+            "embedding_function must return one query embedding plus one embedding per node label")
 
     query_embedding = embeddings[0]
     scored_nodes = [
@@ -629,12 +647,15 @@ def _run_personalized_pagerank(
         for source_index, outgoing in enumerate(transitions):
             if not outgoing:
                 for target_index, probability in enumerate(personalization):
-                    next_scores[target_index] += damping * scores[source_index] * probability
+                    next_scores[target_index] += damping * \
+                        scores[source_index] * probability
                 continue
             for target_index, probability in outgoing:
-                next_scores[target_index] += damping * scores[source_index] * probability
+                next_scores[target_index] += damping * \
+                    scores[source_index] * probability
 
-        drift = sum(abs(left - right) for left, right in zip(next_scores, scores))
+        drift = sum(abs(left - right)
+                    for left, right in zip(next_scores, scores))
         scores = next_scores
         if drift <= tolerance:
             break
@@ -657,7 +678,8 @@ def _transition_rows(nodes: list[dict], node_index: dict[str, int]) -> list[list
 
         total_weight = sum(weight for _, weight in outgoing)
         rows.append(
-            [(target_index, weight / total_weight) for target_index, weight in outgoing]
+            [(target_index, weight / total_weight)
+             for target_index, weight in outgoing]
             if total_weight > 0.0
             else []
         )
@@ -670,7 +692,8 @@ def _score_passages(nodes: list[dict], node_scores: list[float]) -> dict[str, fl
         if node_scores[index] <= 0.0:
             continue
         for memory_id in node["passages"]:
-            passage_scores[memory_id] = passage_scores.get(memory_id, 0.0) + node_scores[index]
+            passage_scores[memory_id] = passage_scores.get(
+                memory_id, 0.0) + node_scores[index]
     return {memory_id: score for memory_id, score in passage_scores.items() if score > 0.0}
 
 
@@ -719,5 +742,6 @@ def _dedupe(values: list[str]) -> list[str]:
 
 
 def _more_specific_node_type(existing: str, incoming: str) -> str:
-    priority = {"entity": 0, "value": 1, "event": 2, "preference": 3, "policy": 4}
+    priority = {"entity": 0, "value": 1,
+                "event": 2, "preference": 3, "policy": 4}
     return incoming if priority.get(incoming, 0) > priority.get(existing, 0) else existing

@@ -4,14 +4,14 @@ import json
 import sqlite3
 import tempfile
 from dataclasses import asdict, dataclass
-from datetime import date, datetime
+from datetime import date
 from pathlib import Path
 from typing import Any
 
 from backend.agent import IntentClassifier, build_issue_queue, generate_acknowledgment
 from backend.agent.clarification import decide_next_action
 from backend.agent.policy_graph import PolicyGraphValidator
-from backend.db import DEFAULT_DB_PATH, reset_to_initial_state
+from backend.db import reset_to_initial_state
 from backend.tools import (
     apply_credit,
     check_duplicate_charge,
@@ -82,7 +82,8 @@ def run_evaluation(
 
     try:
         results = [
-            _run_case(pass_index=pass_index, scenario=scenario, db_path=working_db_path)
+            _run_case(pass_index=pass_index, scenario=scenario,
+                      db_path=working_db_path)
             for pass_index in range(1, k + 1)
             for scenario in scenarios
         ]
@@ -151,9 +152,11 @@ def _run_case(*, pass_index: int, scenario: EvaluationScenario, db_path: Path) -
     next_action = decide_next_action(
         issue_queue,
         slots,
-        tool_failure="simulate_check_outage_status_failure" in scenario.initial_state.get("test_flags", []),
+        tool_failure="simulate_check_outage_status_failure" in scenario.initial_state.get(
+            "test_flags", []),
         health_score=_scenario_health_score(scenario),
-        ambiguity_detected=_scenario_needs_problem_description(scenario, classification.intents),
+        ambiguity_detected=_scenario_needs_problem_description(
+            scenario, classification.intents),
     )
     artifacts["next_action"] = next_action.to_dict()
     _write_audit_log(scenario, db_path, session_id, tools_called, artifacts)
@@ -161,8 +164,10 @@ def _run_case(*, pass_index: int, scenario: EvaluationScenario, db_path: Path) -
     required_tools = list(scenario.goal_state.get("required_tools", []))
     forbidden_tools = list(scenario.goal_state.get("forbidden_tools", []))
     missing = [tool for tool in required_tools if tool not in tools_called]
-    forbidden_called = [tool for tool in forbidden_tools if tool in tools_called]
-    artifact_failures = _artifact_failures(scenario, artifacts, policies_retrieved)
+    forbidden_called = [
+        tool for tool in forbidden_tools if tool in tools_called]
+    artifact_failures = _artifact_failures(
+        scenario, artifacts, policies_retrieved)
     failures.extend(artifact_failures)
     db_failures = _db_state_failures(
         scenario=scenario,
@@ -173,10 +178,12 @@ def _run_case(*, pass_index: int, scenario: EvaluationScenario, db_path: Path) -
     )
     failures.extend(db_failures)
     failures.extend(f"missing required tool {tool}" for tool in missing)
-    failures.extend(f"forbidden tool called {tool}" for tool in forbidden_called)
+    failures.extend(
+        f"forbidden tool called {tool}" for tool in forbidden_called)
 
     if not set(scenario.goal_state.get("issue_queue_order", [])).issubset(set(observed_queue)):
-        failures.append("observed classifier queue does not cover expected issue queue")
+        failures.append(
+            "observed classifier queue does not cover expected issue queue")
 
     passed = not failures
     score = _case_score(
@@ -218,7 +225,8 @@ def _execute_required_tool(
         return
     customer_id = scenario.customer_id
     if tool_name == "lookup_customer":
-        artifacts["tool_results"][tool_name] = lookup_customer(customer_id, db_path=db_path)
+        artifacts["tool_results"][tool_name] = lookup_customer(
+            customer_id, db_path=db_path)
     elif tool_name == "get_invoice_history":
         artifacts["tool_results"][tool_name] = get_invoice_history(
             customer_id,
@@ -233,7 +241,8 @@ def _execute_required_tool(
         )
     elif tool_name == "check_outage_status":
         if "simulate_check_outage_status_failure" in scenario.initial_state.get("test_flags", []):
-            artifacts["tool_results"][tool_name] = {"ok": False, "error": "simulated_check_outage_status_failure"}
+            artifacts["tool_results"][tool_name] = {
+                "ok": False, "error": "simulated_check_outage_status_failure"}
             tools_called.append(tool_name)
             return
         artifacts["tool_results"][tool_name] = check_outage_status(
@@ -251,17 +260,20 @@ def _execute_required_tool(
     elif tool_name == "retrieve_policy":
         retrievals = []
         for policy_name in scenario.goal_state.get("required_policies", []):
-            policy = retrieve_policy(policy_name, query=" ".join(scenario.customer_messages))
+            policy = retrieve_policy(
+                policy_name, query=" ".join(scenario.customer_messages))
             if policy is not None:
                 policies_retrieved.append(policy["policy_id"])
                 retrievals.append(policy)
-        artifacts["tool_results"][tool_name] = {"policy_ids": list(policies_retrieved)}
+        artifacts["tool_results"][tool_name] = {
+            "policy_ids": list(policies_retrieved)}
         artifacts["policy_retrievals"] = retrievals
     elif tool_name == "apply_credit":
         context = _service_credit_context(artifacts)
         artifacts["tool_results"][tool_name] = apply_credit(
             customer_id,
-            min(float(scenario.goal_state.get("expected_artifacts", {}).get("maximum_credit_inr", 300)), 300),
+            min(float(scenario.goal_state.get("expected_artifacts", {}).get(
+                "maximum_credit_inr", 300)), 300),
             "Verified outage service credit from evaluation harness.",
             policy_context=context,
             applied_to_invoice=slots.get("invoice_id"),
@@ -269,7 +281,8 @@ def _execute_required_tool(
         )
         artifacts["policy_paths"]["service_credit_dag"] = artifacts["tool_results"][tool_name]["policy_path"]
     elif tool_name == "create_ticket":
-        ticket_type, policy_name, context = _ticket_request(scenario, artifacts)
+        ticket_type, policy_name, context = _ticket_request(
+            scenario, artifacts)
         artifacts["tool_results"][tool_name] = create_ticket(
             customer_id,
             ticket_type,
@@ -287,11 +300,13 @@ def _execute_required_tool(
             db_path=db_path,
         )
     else:
-        artifacts["tool_results"][tool_name] = {"skipped": True, "reason": "tool not executable by evaluation runner"}
+        artifacts["tool_results"][tool_name] = {
+            "skipped": True, "reason": "tool not executable by evaluation runner"}
     tools_called.append(tool_name)
 
     if tool_name in {"apply_credit", "create_ticket", "generate_handoff_summary"}:
-        _write_audit_log(scenario, db_path, session_id, tools_called, artifacts)
+        _write_audit_log(scenario, db_path, session_id,
+                         tools_called, artifacts)
 
 
 def _scenario_slots(scenario: EvaluationScenario, db_path: Path) -> dict[str, Any]:
@@ -335,7 +350,8 @@ def _ticket_request(scenario: EvaluationScenario, artifacts: dict[str, Any]) -> 
             },
         )
     if scenario.scenario_id == "case_02_duplicate_charge":
-        duplicate = artifacts["tool_results"].get("check_duplicate_charge") or {}
+        duplicate = artifacts["tool_results"].get(
+            "check_duplicate_charge") or {}
         context = {
             "check_duplicate_charge": {"duplicate_confirmed": bool(duplicate.get("duplicate_confirmed"))},
             "get_invoice_history": {"single_matching_invoice": bool(duplicate.get("single_matching_invoice"))},
@@ -367,7 +383,8 @@ def _write_audit_log(
         evidence_used=evidence,
         action_taken=_actions_from_artifacts(artifacts),
         policy_dag_path=policy_path,
-        handoff_required=bool(scenario.goal_state.get("expected_artifacts", {}).get("handoff_required")),
+        handoff_required=bool(scenario.goal_state.get(
+            "expected_artifacts", {}).get("handoff_required")),
         db_path=db_path,
     )
 
@@ -378,11 +395,14 @@ def _actions_from_artifacts(artifacts: dict[str, Any]) -> list[dict]:
         if not isinstance(result, dict):
             continue
         if tool_name == "apply_credit" and result.get("credit_id"):
-            actions.append({"action": "apply_credit", "credit_id": result["credit_id"]})
+            actions.append({"action": "apply_credit",
+                           "credit_id": result["credit_id"]})
         if tool_name == "create_ticket" and result.get("ticket_id"):
-            actions.append({"action": "create_ticket", "ticket_id": result["ticket_id"]})
+            actions.append({"action": "create_ticket",
+                           "ticket_id": result["ticket_id"]})
         if tool_name == "generate_handoff_summary" and result.get("handoff_summary_id"):
-            actions.append({"action": "generate_handoff_summary", "handoff_summary_id": result["handoff_summary_id"]})
+            actions.append({"action": "generate_handoff_summary",
+                           "handoff_summary_id": result["handoff_summary_id"]})
     return actions
 
 
@@ -409,7 +429,8 @@ def _artifact_failures(
     policy_dag = expected.get("policy_dag")
     if policy_dag and policy_dag not in artifacts["policy_paths"]:
         try:
-            artifacts["policy_paths"][policy_dag] = PolicyGraphValidator().run(policy_dag, _policy_context_for(scenario)).path
+            artifacts["policy_paths"][policy_dag] = PolicyGraphValidator().run(
+                policy_dag, _policy_context_for(scenario)).path
         except Exception as exc:  # noqa: BLE001
             failures.append(f"policy DAG {policy_dag} did not traverse: {exc}")
     return failures
@@ -436,11 +457,13 @@ def _db_state_failures(
         else:
             max_credit = expected.get("maximum_credit_inr")
             if max_credit is not None and any(float(row["amount"]) > float(max_credit) for row in state["credits"]):
-                failures.append(f"persisted credit exceeds maximum_credit_inr {max_credit}")
+                failures.append(
+                    f"persisted credit exceeds maximum_credit_inr {max_credit}")
 
     if expected.get("cash_refund_forbidden") or expected.get("auto_cancellation_forbidden"):
         if state["credits"]:
-            failures.append("forbidden credit/refund side effect was persisted")
+            failures.append(
+                "forbidden credit/refund side effect was persisted")
 
     if expected.get("ticket_required") and not state["tickets"]:
         failures.append("expected persisted support ticket missing")
@@ -448,7 +471,8 @@ def _db_state_failures(
     if expected.get("retention_handoff_required") and not state["tickets"]:
         failures.append("expected persisted retention ticket missing")
 
-    expected_handoff = bool(expected.get("handoff_required") or expected.get("retention_handoff_required"))
+    expected_handoff = bool(expected.get(
+        "handoff_required") or expected.get("retention_handoff_required"))
     observed_handoff = bool(
         artifacts["tool_results"].get("generate_handoff_summary")
         or state["handoff_count"]
@@ -462,13 +486,15 @@ def _db_state_failures(
     if expected.get("targeted_question_required"):
         next_action = artifacts.get("next_action", {})
         if next_action.get("action") != "ASK":
-            failures.append("expected targeted clarification question was not generated")
+            failures.append(
+                "expected targeted clarification question was not generated")
         elif expected.get("one_slot_only") and not next_action.get("question"):
             failures.append("expected one-slot clarification metadata missing")
 
     if expected.get("queue_preserved"):
         expected_order = list(scenario.goal_state.get("issue_queue_order", []))
-        observed_queue = list(artifacts.get("next_action", {}).get("metadata", {}).get("queue", []))
+        observed_queue = list(artifacts.get("next_action", {}).get(
+            "metadata", {}).get("queue", []))
         if observed_queue and expected_order and observed_queue[: len(expected_order)] != expected_order:
             failures.append("issue queue order was not preserved")
 
@@ -487,7 +513,8 @@ def _db_state_failures(
 
     for policy in scenario.goal_state.get("required_policies", []):
         if policy not in policies_retrieved:
-            failures.append(f"required policy {policy} not present in retrieval artifacts")
+            failures.append(
+                f"required policy {policy} not present in retrieval artifacts")
 
     return failures
 
@@ -643,7 +670,8 @@ def _insert_conversation(
 
 def _conversation_messages(scenario: EvaluationScenario) -> list[dict]:
     messages = list(scenario.initial_state.get("conversation_context", []))
-    messages.extend({"role": "user", "content": message} for message in scenario.customer_messages)
+    messages.extend({"role": "user", "content": message}
+                    for message in scenario.customer_messages)
     return messages
 
 

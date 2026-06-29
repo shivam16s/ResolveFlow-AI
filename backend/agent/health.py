@@ -155,8 +155,10 @@ class CASAEmpathySequence:
 def intent_confidence_component(classification: IntentClassification) -> IntentConfidenceComponent:
     if not isinstance(classification, IntentClassification):
         raise ValueError("classification must be an IntentClassification")
-    probabilities = _normalized_probabilities(classification.intent_probabilities)
-    value = sum(probabilities.get(intent, 0.0) for intent in classification.intents)
+    probabilities = _normalized_probabilities(
+        classification.intent_probabilities)
+    value = sum(probabilities.get(intent, 0.0)
+                for intent in classification.intents)
     return IntentConfidenceComponent(
         value=round(max(0.0, min(1.0, value)), 2),
         primary_intent=classification.primary_intent,
@@ -206,9 +208,11 @@ def casa_empathy_sequence(
 ) -> CASAEmpathySequence:
     score = _health_score_value(relationship_score)
     if score >= 40:
-        raise ValueError("CASA empathy sequence is only for AT_RISK relationship scores below 40")
+        raise ValueError(
+            "CASA empathy sequence is only for AT_RISK relationship scores below 40")
     customer_ref = _clean_optional_phrase(customer_name, default="there")
-    summary = _clean_optional_phrase(issue_summary, default="the current support issue")
+    summary = _clean_optional_phrase(
+        issue_summary, default="the current support issue")
     steps = [
         CASAEmpathyStep(
             code="C",
@@ -344,7 +348,8 @@ def compute_relationship_score(
         4,
     )
     weight_total = round(sum(weights), 4)
-    score = default if weight_total == 0 else round(weighted_sum / weight_total, 2)
+    score = default if weight_total == 0 else round(
+        weighted_sum / weight_total, 2)
     return RelationshipScore(
         score=score,
         session_scores=session_scores,
@@ -401,7 +406,8 @@ def knowledge_coverage_component(
     normalized_required_tools = _normalize_required_tools(required_tools)
     tool_coverage = _tool_coverage(normalized_tools, normalized_required_tools)
     crag_scores = _extract_crag_scores(crag_evaluations or [])
-    crag_confidence = round(sum(crag_scores) / len(crag_scores), 2) if crag_scores else 0.0
+    crag_confidence = round(
+        sum(crag_scores) / len(crag_scores), 2) if crag_scores else 0.0
     value = round((0.5 * tool_coverage) + (0.5 * crag_confidence), 2)
     return KnowledgeCoverageComponent(
         value=value,
@@ -458,8 +464,10 @@ def sentiment_score_component(
         raw_output = llm_client(build_sentiment_prompt(recent_messages))
         payload = _extract_json_object(raw_output)
         label = _clean_sentiment_label(payload.get("label", "neutral"))
-        value = _clean_score(payload.get("score", _score_for_sentiment_label(label)))
-        rationale = str(payload.get("rationale", "")).strip() or f"LLM classified sentiment as {label}."
+        value = _clean_score(payload.get(
+            "score", _score_for_sentiment_label(label)))
+        rationale = str(payload.get("rationale", "")).strip(
+        ) or f"LLM classified sentiment as {label}."
         return SentimentScoreComponent(
             value=value,
             label=label,
@@ -545,7 +553,8 @@ def _normalized_probabilities(probabilities: dict[str, float]) -> dict[str, floa
         cleaned[intent] = max(0.0, value)
     total = sum(cleaned.values())
     if total <= 0:
-        raise ValueError("classification intent_probabilities must contain positive mass")
+        raise ValueError(
+            "classification intent_probabilities must contain positive mass")
     return {
         intent: round(cleaned[intent] / total, 6)
         for intent in ALLOWED_INTENTS
@@ -557,18 +566,21 @@ def _component_value(component, component_name: str) -> float:
     try:
         numeric = float(value)
     except (TypeError, ValueError) as exc:
-        raise ValueError(f"{component_name} must be numeric or expose a numeric value") from exc
+        raise ValueError(
+            f"{component_name} must be numeric or expose a numeric value") from exc
     if numeric < 0 or numeric > 1:
         raise ValueError(f"{component_name} must be between 0 and 1")
     return round(numeric, 4)
 
 
 def _health_score_value(health_score) -> float:
-    value = health_score.score if hasattr(health_score, "score") else health_score
+    value = health_score.score if hasattr(
+        health_score, "score") else health_score
     try:
         numeric = float(value)
     except (TypeError, ValueError) as exc:
-        raise ValueError("health_score must be numeric or expose a numeric score") from exc
+        raise ValueError(
+            "health_score must be numeric or expose a numeric score") from exc
     if numeric < 0 or numeric > 100:
         raise ValueError("health_score must be between 0 and 100")
     return round(numeric, 2)
@@ -581,7 +593,8 @@ def _session_health_score_value(session, index: int) -> float:
         for key in ("health_score", "health_score_end", "score", "relationship_score_end"):
             if key in session and session[key] is not None:
                 return _health_score_value(session[key])
-        raise ValueError(f"past_sessions[{index}] must include a score-like field")
+        raise ValueError(
+            f"past_sessions[{index}] must include a score-like field")
     return _health_score_value(session)
 
 
@@ -615,13 +628,15 @@ def _clean_messages(messages: list[dict[str, object]]) -> list[dict[str, str]]:
 
 def _extract_json_object(raw_output: str) -> dict:
     cleaned = str(raw_output).strip()
-    fenced = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", cleaned, flags=re.DOTALL)
+    fenced = re.search(
+        r"```(?:json)?\s*(\{.*?\})\s*```", cleaned, flags=re.DOTALL)
     if fenced:
         cleaned = fenced.group(1)
     try:
         payload = json.loads(cleaned)
     except json.JSONDecodeError as exc:
-        raise ValueError(f"sentiment LLM output was not valid JSON: {exc}") from exc
+        raise ValueError(
+            f"sentiment LLM output was not valid JSON: {exc}") from exc
     if not isinstance(payload, dict):
         raise ValueError("sentiment LLM output must be a JSON object")
     return payload
@@ -629,7 +644,8 @@ def _extract_json_object(raw_output: str) -> dict:
 
 def _clean_sentiment_label(label: object) -> str:
     normalized = str(label).strip().lower()
-    allowed = {"positive", "calm", "neutral", "concerned", "frustrated", "angry"}
+    allowed = {"positive", "calm", "neutral",
+               "concerned", "frustrated", "angry"}
     if normalized not in allowed:
         return "neutral"
     return normalized
@@ -656,10 +672,14 @@ def _score_for_sentiment_label(label: str) -> float:
 
 def _rule_sentiment(messages: list[dict[str, str]]) -> tuple[str, float, str]:
     text = " ".join(message["content"].lower() for message in messages)
-    angry_terms = ("angry", "ridiculous", "useless", "terrible", "hate", "stop the bot")
-    frustrated_terms = ("frustrated", "tired", "annoyed", "again", "still not", "not fixed", "cancel")
-    concerned_terms = ("worried", "concerned", "confused", "why", "please help")
-    positive_terms = ("thanks", "thank you", "great", "working now", "resolved")
+    angry_terms = ("angry", "ridiculous", "useless",
+                   "terrible", "hate", "stop the bot")
+    frustrated_terms = ("frustrated", "tired", "annoyed",
+                        "again", "still not", "not fixed", "cancel")
+    concerned_terms = ("worried", "concerned",
+                       "confused", "why", "please help")
+    positive_terms = ("thanks", "thank you", "great",
+                      "working now", "resolved")
     calm_terms = ("please", "can you", "could you")
 
     if any(term in text for term in angry_terms):
@@ -717,10 +737,13 @@ def _normalize_tool_calls_for_coverage(tools_called: list) -> list[dict]:
             continue
         if not isinstance(item, dict):
             raise ValueError("tools_called entries must be strings or dicts")
-        name = str(item.get("tool_name") or item.get("name") or item.get("tool") or "").strip()
+        name = str(item.get("tool_name") or item.get(
+            "name") or item.get("tool") or "").strip()
         if not name:
-            raise ValueError("tool call dicts must include tool_name, name, or tool")
-        normalized.append({"name": name, "successful": _tool_call_successful(item)})
+            raise ValueError(
+                "tool call dicts must include tool_name, name, or tool")
+        normalized.append(
+            {"name": name, "successful": _tool_call_successful(item)})
     return normalized
 
 
@@ -758,7 +781,8 @@ def _normalize_required_tools(required_tools: list[str] | None) -> list[str]:
 
 
 def _tool_coverage(tools_called: list[dict], required_tools: list[str]) -> float:
-    successful_tools = {tool["name"] for tool in tools_called if tool["successful"]}
+    successful_tools = {tool["name"]
+                        for tool in tools_called if tool["successful"]}
     if required_tools:
         covered = sum(1 for tool in required_tools if tool in successful_tools)
         return round(covered / len(required_tools), 2)
@@ -786,7 +810,8 @@ def _score_from_crag_item(item) -> float | None:
     if hasattr(item, "score"):
         return _clean_score(getattr(item, "score"))
     if not isinstance(item, dict):
-        raise ValueError("crag_evaluations entries must be dicts, scored objects, or objects with to_dict()")
+        raise ValueError(
+            "crag_evaluations entries must be dicts, scored objects, or objects with to_dict()")
     if "score" in item:
         return _clean_score(item["score"])
     for key in ("relevance", "evaluation"):

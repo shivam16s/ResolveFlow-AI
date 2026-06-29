@@ -56,7 +56,8 @@ def render_case_handoff_tab(
     if audit_row is None:
         return None
 
-    context_card = generate_context_card(audit_row["session_id"], db_path=db_path)
+    context_card = generate_context_card(
+        audit_row["session_id"], db_path=db_path)
     if context_card is None:
         return None
 
@@ -120,7 +121,8 @@ def render_audit_log_tabs_html(raw_json: dict[str, Any]) -> str:
     evidence = raw_json.get("evidence_used")
     actions = raw_json.get("action_taken")
     path = raw_json.get("policy_dag_path")
-    raw_json_text = json.dumps(raw_json, indent=2, sort_keys=True, ensure_ascii=True)
+    raw_json_text = json.dumps(
+        raw_json, indent=2, sort_keys=True, ensure_ascii=True)
     summary = _audit_summary(raw_json)
 
     return f"""<!doctype html>
@@ -347,7 +349,6 @@ def render_handoff_context_card_html(context_card: dict[str, Any]) -> str:
     customer = _dict_value(context_card.get("customer"))
     issues_summary = _dict_value(context_card.get("issues_summary"))
     policy_path = _dict_value(context_card.get("policy_dag_path_so_far"))
-    audit = _dict_value(context_card.get("audit"))
     handoff_queue = _dict_value(context_card.get("handoff_queue"))
     relationship = _dict_value(context_card.get("relationship"))
 
@@ -355,9 +356,12 @@ def render_handoff_context_card_html(context_card: dict[str, Any]) -> str:
     plan_name = _text(customer.get("plan_name"), "Plan unavailable")
     account_status = _text(customer.get("account_status"), "unknown")
     location = _text(customer.get("location"), "Location unavailable")
-    opening = _text(context_card.get("recommended_opening"), "I have the case context and can continue from here.")
-    reason = _text(context_card.get("reason_for_escalation"), "No escalation reason recorded.")
-    last_message = _text(context_card.get("last_customer_message"), "No customer message recorded.")
+    opening = _text(context_card.get("recommended_opening"),
+                    "I have the case context and can continue from here.")
+    reason = _text(context_card.get("reason_for_escalation"),
+                   "No escalation reason recorded.")
+    last_message = _text(context_card.get(
+        "last_customer_message"), "No customer message recorded.")
 
     return f"""<!doctype html>
 <html lang="en">
@@ -623,12 +627,14 @@ def _json_value(raw_value: str | None, default):
 
 
 def _audit_summary(raw_json: dict[str, Any]) -> str:
-    tools = ", ".join(_tool_labels(raw_json.get("tools_called"))) or "no tools recorded"
+    tools = ", ".join(_tool_labels(raw_json.get(
+        "tools_called"))) or "no tools recorded"
     evidence_count = len(raw_json.get("evidence_used") or [])
     action_count = len(raw_json.get("action_taken") or [])
     ujcs = raw_json.get("ujcs")
     ujcs_text = "not computed" if ujcs is None else f"{float(ujcs):.4f}"
-    handoff_text = "handoff required" if raw_json.get("handoff_required") else "no handoff required"
+    handoff_text = "handoff required" if raw_json.get(
+        "handoff_required") else "no handoff required"
     return (
         f"Case {raw_json.get('case_id')} for customer {raw_json.get('customer_id')} used {tools}; "
         f"{evidence_count} evidence item(s), {action_count} action(s), UJCS {ujcs_text}, "
@@ -722,7 +728,8 @@ def _action_labels(actions: Any) -> list[str]:
     labels = []
     for action in actions:
         if isinstance(action, dict):
-            labels.append(_text(action.get("action") or action.get("status") or action))
+            labels.append(_text(action.get("action")
+                          or action.get("status") or action))
         else:
             labels.append(_text(action))
     return labels
@@ -734,7 +741,8 @@ def _tool_labels(tools: Any) -> list[str]:
     labels = []
     for tool in tools:
         if isinstance(tool, dict):
-            labels.append(_text(tool.get("tool_name") or tool.get("name") or tool.get("tool") or tool))
+            labels.append(_text(tool.get("tool_name") or tool.get(
+                "name") or tool.get("tool") or tool))
         else:
             labels.append(_text(tool))
     return labels
@@ -746,7 +754,8 @@ def _memory_labels(memories: Any) -> list[str]:
     labels = []
     for memory in memories:
         if isinstance(memory, dict):
-            labels.append(_text(memory.get("content") or memory.get("memory_id")))
+            labels.append(_text(memory.get("content")
+                          or memory.get("memory_id")))
         else:
             labels.append(_text(memory))
     return labels

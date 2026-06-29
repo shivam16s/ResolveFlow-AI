@@ -33,7 +33,8 @@ def extract_openie_triples(
         raise ValueError("max_triples must be at least 1")
 
     client = llm_client or GeminiGenerateClient()
-    raw_output = client(build_openie_prompt(normalized, max_triples=max_triples))
+    raw_output = client(build_openie_prompt(
+        normalized, max_triples=max_triples))
     payload = _extract_json_object(raw_output)
     return _triples_from_payload(payload, max_triples=max_triples)
 
@@ -95,14 +96,16 @@ def build_openie_prompt(text: str, *, max_triples: int = 12) -> str:
 
 def _extract_json_object(raw_output: str) -> dict:
     cleaned = raw_output.strip()
-    fenced = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", cleaned, flags=re.DOTALL)
+    fenced = re.search(
+        r"```(?:json)?\s*(\{.*?\})\s*```", cleaned, flags=re.DOTALL)
     if fenced:
         cleaned = fenced.group(1)
 
     try:
         payload = json.loads(cleaned)
     except json.JSONDecodeError as exc:
-        raise ValueError(f"OpenIE LLM output was not valid JSON: {exc}") from exc
+        raise ValueError(
+            f"OpenIE LLM output was not valid JSON: {exc}") from exc
 
     if not isinstance(payload, dict):
         raise ValueError("OpenIE LLM output must be a JSON object")
@@ -136,7 +139,8 @@ def _triples_from_payload(payload: dict, *, max_triples: int) -> list[OpenIETrip
                 subject=subject,
                 relation=relation,
                 object=object_,
-                confidence=_clean_confidence(raw_triple.get("confidence", 0.7)),
+                confidence=_clean_confidence(
+                    raw_triple.get("confidence", 0.7)),
                 evidence=_clean_evidence(raw_triple.get("evidence", "")),
             )
         )

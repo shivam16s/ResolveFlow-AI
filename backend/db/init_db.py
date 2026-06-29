@@ -6,7 +6,8 @@ from pathlib import Path
 
 
 SCHEMA_PATH = Path(__file__).with_name("schema.sql")
-DEFAULT_DB_PATH = Path(__file__).resolve().parents[2] / "data" / "resolveflow.db"
+DEFAULT_DB_PATH = Path(__file__).resolve(
+).parents[2] / "data" / "resolveflow.db"
 
 
 def initialize_database(db_path: Path = DEFAULT_DB_PATH) -> None:
@@ -20,7 +21,8 @@ def initialize_database(db_path: Path = DEFAULT_DB_PATH) -> None:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Initialize the ResolveFlow SQLite database.")
+    parser = argparse.ArgumentParser(
+        description="Initialize the ResolveFlow SQLite database.")
     parser.add_argument(
         "--db-path",
         type=Path,

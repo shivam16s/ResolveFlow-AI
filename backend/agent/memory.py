@@ -171,7 +171,8 @@ def fact_augmented_expansion(query: str, max_terms: int = 18) -> str:
     for group in matched_groups:
         terms.extend(FACT_EXPANSION_TERMS[group])
 
-    ids = re.findall(r"\b(?:CUST|INV|PAY|OUT|TICK|CASE)-[A-Z0-9-]+\b", normalized, flags=re.IGNORECASE)
+    ids = re.findall(
+        r"\b(?:CUST|INV|PAY|OUT|TICK|CASE)-[A-Z0-9-]+\b", normalized, flags=re.IGNORECASE)
     terms.extend(identifier.upper() for identifier in ids)
 
     return " OR ".join(_dedupe_case_insensitive(terms)[:max_terms])
@@ -193,7 +194,8 @@ def time_aware_expansion(query: str, reference_date: date | None = None) -> str:
     for label, start, end in anchors:
         terms.append(f"{label}:created_at>={start.isoformat()}")
         terms.append(f"{label}:created_at<={end.isoformat()}")
-        terms.append(f"{label}:date_range={start.isoformat()}..{end.isoformat()}")
+        terms.append(
+            f"{label}:date_range={start.isoformat()}..{end.isoformat()}")
 
     return " OR ".join(_dedupe_case_insensitive(terms))
 
@@ -279,8 +281,10 @@ def _split_into_atomic_fragments(text: str) -> list[str]:
         if not sentence:
             continue
 
-        parts = re.split(r"\s+(?:and|also|but)\s+", sentence, flags=re.IGNORECASE)
-        fragments.extend(part.strip(" .!?") for part in parts if part.strip(" .!?"))
+        parts = re.split(r"\s+(?:and|also|but)\s+",
+                         sentence, flags=re.IGNORECASE)
+        fragments.extend(part.strip(" .!?")
+                         for part in parts if part.strip(" .!?"))
 
     return fragments
 
@@ -343,7 +347,8 @@ def _extract_entity_tags(fragment: str, topic: str) -> list[str]:
         if any(keyword in lower for keyword in keywords):
             tags.append(tag)
 
-    ids = re.findall(r"\b(?:CUST|INV|PAY|OUT|TICK|CASE)-[A-Z0-9-]+\b", fragment, flags=re.IGNORECASE)
+    ids = re.findall(
+        r"\b(?:CUST|INV|PAY|OUT|TICK|CASE)-[A-Z0-9-]+\b", fragment, flags=re.IGNORECASE)
     tags.extend(identifier.upper() for identifier in ids)
     return _dedupe(tags)
 

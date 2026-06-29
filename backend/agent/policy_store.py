@@ -82,7 +82,8 @@ class ChromaPolicyStore:
     ) -> PolicyIngestionSummary:
         documents = load_policy_documents(policy_dir)
         if expected_count is not None and len(documents) != expected_count:
-            raise ValueError(f"expected {expected_count} policy docs, found {len(documents)} in {policy_dir}")
+            raise ValueError(
+                f"expected {expected_count} policy docs, found {len(documents)} in {policy_dir}")
 
         chunks = [
             chunk
@@ -143,7 +144,8 @@ class ChromaPolicyStore:
 def load_policy_documents(policy_dir: Path = DEFAULT_POLICY_DIR) -> list[PolicyDocument]:
     policy_dir = Path(policy_dir)
     if not policy_dir.exists():
-        raise FileNotFoundError(f"policy directory does not exist: {policy_dir}")
+        raise FileNotFoundError(
+            f"policy directory does not exist: {policy_dir}")
 
     documents = []
     for path in sorted(policy_dir.glob("*.md")):
@@ -175,7 +177,7 @@ def chunk_policy_document(
     step = max_tokens - overlap_tokens
     start = 0
     while start < len(tokens):
-        window_tokens = tokens[start : start + max_tokens]
+        window_tokens = tokens[start: start + max_tokens]
         windows.append(window_tokens)
         if start + max_tokens >= len(tokens):
             break
@@ -210,7 +212,8 @@ def _parse_policy_document(path: Path, text: str) -> PolicyDocument:
     try:
         version = int(version_text)
     except ValueError as exc:
-        raise ValueError(f"invalid policy version in {path}: {version_text}") from exc
+        raise ValueError(
+            f"invalid policy version in {path}: {version_text}") from exc
 
     return PolicyDocument(
         policy_id=policy_id,
@@ -229,7 +232,8 @@ def _extract_title(text: str) -> str:
 
 
 def _extract_header_value(text: str, label: str) -> str:
-    match = re.search(rf"^{re.escape(label)}:\s*(.+)$", text, flags=re.MULTILINE | re.IGNORECASE)
+    match = re.search(rf"^{re.escape(label)}:\s*(.+)$",
+                      text, flags=re.MULTILINE | re.IGNORECASE)
     return match.group(1).strip() if match else ""
 
 

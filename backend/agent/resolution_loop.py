@@ -14,7 +14,8 @@ class IssueResolution:
 
     def __post_init__(self) -> None:
         if self.status not in {"resolved", "escalated"}:
-            raise ValueError("IssueResolution.status must be 'resolved' or 'escalated'")
+            raise ValueError(
+                "IssueResolution.status must be 'resolved' or 'escalated'")
 
     def to_dict(self) -> dict:
         return asdict(self)

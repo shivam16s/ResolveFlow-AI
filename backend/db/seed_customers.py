@@ -56,26 +56,46 @@ PLANS = [
 
 
 CUSTOMERS = [
-    ("CUST-1001", "Rahul Sharma", "rahul.sharma@example.com", "Chennai Zone-04", "fiber_plus_200", "high", "en", "active", 0.78),
-    ("CUST-1002", "Ananya Iyer", "ananya.iyer@example.com", "Chennai Zone-02", "fiber_family_300", "medium", "ta", "active", 0.42),
-    ("CUST-1003", "Vikram Mehta", "vikram.mehta@example.com", "Mumbai West-01", "fiber_work_500", "low", "en", "active", 0.18),
-    ("CUST-1004", "Priya Nair", "priya.nair@example.com", "Kochi Central-03", "fiber_starter_100", "medium", "ml", "active", 0.36),
-    ("CUST-1005", "Arjun Reddy", "arjun.reddy@example.com", "Hyderabad North-02", "mobile_broadband_bundle", "high", "te", "pending_cancellation", 0.84),
-    ("CUST-1006", "Meera Kapoor", "meera.kapoor@example.com", "Delhi South-07", "fiber_plus_200", "low", "hi", "active", 0.21),
-    ("CUST-1007", "Sanjay Kulkarni", "sanjay.kulkarni@example.com", "Pune East-05", "fiber_family_300", "medium", "mr", "active", 0.49),
-    ("CUST-1008", "Neha Gupta", "neha.gupta@example.com", "Noida Sector-62", "fiber_work_500", "critical", "hi", "active", 0.91),
-    ("CUST-1009", "Karthik Subramanian", "karthik.subramanian@example.com", "Bengaluru Whitefield", "fiber_plus_200", "medium", "kn", "active", 0.55),
-    ("CUST-1010", "Aisha Khan", "aisha.khan@example.com", "Lucknow Central-01", "fiber_starter_100", "low", "hi", "active", 0.16),
-    ("CUST-1011", "Rohan Das", "rohan.das@example.com", "Kolkata Salt Lake", "mobile_broadband_bundle", "medium", "bn", "active", 0.47),
-    ("CUST-1012", "Divya Menon", "divya.menon@example.com", "Trivandrum North-02", "fiber_family_300", "low", "ml", "active", 0.24),
-    ("CUST-1013", "Kabir Malhotra", "kabir.malhotra@example.com", "Gurgaon DLF-03", "fiber_work_500", "high", "en", "active", 0.73),
-    ("CUST-1014", "Sneha Patil", "sneha.patil@example.com", "Nagpur West-04", "fiber_starter_100", "medium", "mr", "suspended", 0.62),
-    ("CUST-1015", "Ishaan Bose", "ishaan.bose@example.com", "Kolkata Park Street", "fiber_plus_200", "low", "bn", "active", 0.28),
-    ("CUST-1016", "Nisha Verma", "nisha.verma@example.com", "Jaipur East-06", "mobile_broadband_bundle", "medium", "hi", "active", 0.51),
-    ("CUST-1017", "Aditya Rao", "aditya.rao@example.com", "Bengaluru Indiranagar", "fiber_family_300", "high", "kn", "pending_cancellation", 0.81),
-    ("CUST-1018", "Farah Qureshi", "farah.qureshi@example.com", "Ahmedabad SG Highway", "fiber_starter_100", "low", "gu", "active", 0.19),
-    ("CUST-1019", "Manav Singh", "manav.singh@example.com", "Chandigarh Sector-17", "fiber_work_500", "critical", "en", "active", 0.89),
-    ("CUST-1020", "Lakshmi Narayanan", "lakshmi.narayanan@example.com", "Chennai Zone-04", "fiber_plus_200", "high", "ta", "active", 0.76),
+    ("CUST-1001", "Rahul Sharma", "rahul.sharma@example.com",
+     "Chennai Zone-04", "fiber_plus_200", "high", "en", "active", 0.78),
+    ("CUST-1002", "Ananya Iyer", "ananya.iyer@example.com",
+     "Chennai Zone-02", "fiber_family_300", "medium", "ta", "active", 0.42),
+    ("CUST-1003", "Vikram Mehta", "vikram.mehta@example.com",
+     "Mumbai West-01", "fiber_work_500", "low", "en", "active", 0.18),
+    ("CUST-1004", "Priya Nair", "priya.nair@example.com", "Kochi Central-03",
+     "fiber_starter_100", "medium", "ml", "active", 0.36),
+    ("CUST-1005", "Arjun Reddy", "arjun.reddy@example.com", "Hyderabad North-02",
+     "mobile_broadband_bundle", "high", "te", "pending_cancellation", 0.84),
+    ("CUST-1006", "Meera Kapoor", "meera.kapoor@example.com",
+     "Delhi South-07", "fiber_plus_200", "low", "hi", "active", 0.21),
+    ("CUST-1007", "Sanjay Kulkarni", "sanjay.kulkarni@example.com",
+     "Pune East-05", "fiber_family_300", "medium", "mr", "active", 0.49),
+    ("CUST-1008", "Neha Gupta", "neha.gupta@example.com",
+     "Noida Sector-62", "fiber_work_500", "critical", "hi", "active", 0.91),
+    ("CUST-1009", "Karthik Subramanian", "karthik.subramanian@example.com",
+     "Bengaluru Whitefield", "fiber_plus_200", "medium", "kn", "active", 0.55),
+    ("CUST-1010", "Aisha Khan", "aisha.khan@example.com",
+     "Lucknow Central-01", "fiber_starter_100", "low", "hi", "active", 0.16),
+    ("CUST-1011", "Rohan Das", "rohan.das@example.com", "Kolkata Salt Lake",
+     "mobile_broadband_bundle", "medium", "bn", "active", 0.47),
+    ("CUST-1012", "Divya Menon", "divya.menon@example.com",
+     "Trivandrum North-02", "fiber_family_300", "low", "ml", "active", 0.24),
+    ("CUST-1013", "Kabir Malhotra", "kabir.malhotra@example.com",
+     "Gurgaon DLF-03", "fiber_work_500", "high", "en", "active", 0.73),
+    ("CUST-1014", "Sneha Patil", "sneha.patil@example.com", "Nagpur West-04",
+     "fiber_starter_100", "medium", "mr", "suspended", 0.62),
+    ("CUST-1015", "Ishaan Bose", "ishaan.bose@example.com",
+     "Kolkata Park Street", "fiber_plus_200", "low", "bn", "active", 0.28),
+    ("CUST-1016", "Nisha Verma", "nisha.verma@example.com", "Jaipur East-06",
+     "mobile_broadband_bundle", "medium", "hi", "active", 0.51),
+    ("CUST-1017", "Aditya Rao", "aditya.rao@example.com", "Bengaluru Indiranagar",
+     "fiber_family_300", "high", "kn", "pending_cancellation", 0.81),
+    ("CUST-1018", "Farah Qureshi", "farah.qureshi@example.com",
+     "Ahmedabad SG Highway", "fiber_starter_100", "low", "gu", "active", 0.19),
+    ("CUST-1019", "Manav Singh", "manav.singh@example.com",
+     "Chandigarh Sector-17", "fiber_work_500", "critical", "en", "active", 0.89),
+    ("CUST-1020", "Lakshmi Narayanan", "lakshmi.narayanan@example.com",
+     "Chennai Zone-04", "fiber_plus_200", "high", "ta", "active", 0.76),
 ]
 
 
@@ -147,7 +167,8 @@ def seed_customers(db_path: Path = DEFAULT_DB_PATH) -> None:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Seed ResolveFlow telecom customers.")
+    parser = argparse.ArgumentParser(
+        description="Seed ResolveFlow telecom customers.")
     parser.add_argument(
         "--db-path",
         type=Path,
@@ -157,7 +178,8 @@ def main() -> None:
     args = parser.parse_args()
 
     seed_customers(args.db_path)
-    print(f"Seeded {len(CUSTOMERS)} customers and {len(PLANS)} plans at {args.db_path}")
+    print(
+        f"Seeded {len(CUSTOMERS)} customers and {len(PLANS)} plans at {args.db_path}")
 
 
 if __name__ == "__main__":

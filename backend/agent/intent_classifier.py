@@ -103,7 +103,8 @@ class IntentClassifier:
     @staticmethod
     def _extract_json_object(raw_output: str) -> dict:
         cleaned = raw_output.strip()
-        fenced = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", cleaned, flags=re.DOTALL)
+        fenced = re.search(
+            r"```(?:json)?\s*(\{.*?\})\s*```", cleaned, flags=re.DOTALL)
         if fenced:
             cleaned = fenced.group(1)
 
@@ -126,7 +127,8 @@ class IntentClassifier:
         if unknown:
             raise ValueError(f"unknown intents from LLM: {unknown}")
 
-        primary_intent = payload.get("primary_intent") or _primary_intent(intents)
+        primary_intent = payload.get(
+            "primary_intent") or _primary_intent(intents)
         if primary_intent not in intents:
             primary_intent = _primary_intent(intents)
 
@@ -136,18 +138,24 @@ class IntentClassifier:
 
         confidence = float(payload.get("confidence", 0.7))
         confidence = max(0.0, min(1.0, confidence))
-        intent_probabilities = _clean_probability_payload(payload.get("intent_probabilities"))
+        intent_probabilities = _clean_probability_payload(
+            payload.get("intent_probabilities"))
         if not intent_probabilities:
-            intent_probabilities = _probabilities_from_confidence(primary_intent, confidence)
-        intent_confidence = _intent_confidence_from_probabilities(intents, intent_probabilities)
+            intent_probabilities = _probabilities_from_confidence(
+                primary_intent, confidence)
+        intent_confidence = _intent_confidence_from_probabilities(
+            intents, intent_probabilities)
 
-        emotion = str(payload.get("emotion", "neutral")).strip().lower() or "neutral"
-        evidence_terms = [str(term).strip() for term in payload.get("evidence_terms", []) if str(term).strip()]
+        emotion = str(payload.get("emotion", "neutral")
+                      ).strip().lower() or "neutral"
+        evidence_terms = [str(term).strip() for term in payload.get(
+            "evidence_terms", []) if str(term).strip()]
 
         return IntentClassification(
             intents=intents,
             primary_intent=primary_intent,
-            cancellation_risk=bool(payload.get("cancellation_risk", "cancellation_intent" in intents)),
+            cancellation_risk=bool(payload.get(
+                "cancellation_risk", "cancellation_intent" in intents)),
             urgency=urgency,
             confidence=round(confidence, 2),
             emotion=emotion,
@@ -224,10 +232,12 @@ class IntentClassifier:
         cancellation_risk = "cancellation_intent" in intents
         urgency = _infer_urgency(text, intents)
         emotion = _infer_emotion(text)
-        evidence_terms = _dedupe(term for terms in matches.values() for term in terms)
+        evidence_terms = _dedupe(
+            term for terms in matches.values() for term in terms)
         intent_logits = _rule_intent_logits(matches)
         intent_probabilities = _softmax(intent_logits)
-        intent_confidence = _intent_confidence_from_probabilities(intents, intent_probabilities)
+        intent_confidence = _intent_confidence_from_probabilities(
+            intents, intent_probabilities)
         confidence = intent_confidence
 
         return IntentClassification(
@@ -272,7 +282,8 @@ def _softmax(logits: dict[str, float]) -> dict[str, float]:
     if set(logits) != set(ALLOWED_INTENTS):
         raise ValueError("softmax logits must cover all allowed intents")
     max_logit = max(logits.values())
-    exponentials = {intent: math.exp(value - max_logit) for intent, value in logits.items()}
+    exponentials = {intent: math.exp(value - max_logit)
+                    for intent, value in logits.items()}
     denominator = sum(exponentials.values())
     return {
         intent: round(exponentials[intent] / denominator, 6)
@@ -305,7 +316,8 @@ def _clean_probability_payload(raw_probabilities: object) -> dict[str, float]:
 
 
 def _probabilities_from_confidence(primary_intent: str, confidence: float) -> dict[str, float]:
-    remaining_intents = [intent for intent in ALLOWED_INTENTS if intent != primary_intent]
+    remaining_intents = [
+        intent for intent in ALLOWED_INTENTS if intent != primary_intent]
     remainder = max(0.0, 1.0 - confidence)
     per_other = remainder / len(remaining_intents)
     probabilities = {intent: round(per_other, 6) for intent in ALLOWED_INTENTS}
@@ -314,7 +326,8 @@ def _probabilities_from_confidence(primary_intent: str, confidence: float) -> di
 
 
 def _infer_urgency(text: str, intents: list[str]) -> str:
-    high_terms = ("now", "immediately", "cancel", "angry", "ridiculous", "dead", "not working")
+    high_terms = ("now", "immediately", "cancel", "angry",
+                  "ridiculous", "dead", "not working")
     if any(term in text for term in high_terms) or "cancellation_intent" in intents:
         return "high"
     if {"duplicate_charge", "service_outage", "refund_request"} & set(intents):
@@ -323,7 +336,8 @@ def _infer_urgency(text: str, intents: list[str]) -> str:
 
 
 def _infer_emotion(text: str) -> str:
-    frustrated_terms = ("angry", "ridiculous", "tired", "frustrated", "cancel", "stop the bot")
+    frustrated_terms = ("angry", "ridiculous", "tired",
+                        "frustrated", "cancel", "stop the bot")
     if any(term in text for term in frustrated_terms):
         return "frustrated"
     if "please" in text or "can you" in text:

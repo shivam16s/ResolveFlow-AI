@@ -78,14 +78,18 @@ def build_three_layer_evaluation(
     db_path: Path | None = None,
 ) -> dict:
     if evaluation_result is None:
-        evaluation_result = run_evaluation(k=k, scenarios_path=scenarios_path, db_path=db_path)
+        evaluation_result = run_evaluation(
+            k=k, scenarios_path=scenarios_path, db_path=db_path)
     if not isinstance(evaluation_result, dict):
         raise ValueError("evaluation_result must be a dict when provided")
 
     scenarios = load_evaluation_scenarios(scenarios_path)
-    deterministic_report = generate_metric_report(evaluation_result, scenarios_path=scenarios_path)
-    ragas_report = evaluate_policy_retrievals_with_ragas(evaluation_result, scenarios_path=scenarios_path)
-    packets = build_human_review_packets(evaluation_result, scenarios=scenarios)
+    deterministic_report = generate_metric_report(
+        evaluation_result, scenarios_path=scenarios_path)
+    ragas_report = evaluate_policy_retrievals_with_ragas(
+        evaluation_result, scenarios_path=scenarios_path)
+    packets = build_human_review_packets(
+        evaluation_result, scenarios=scenarios)
 
     return ThreeLayerEvaluationMethodology(
         layers=[
@@ -138,7 +142,8 @@ def build_human_review_packets(
         scenario_id = str(result.get("scenario_id", "")).strip()
         scenario = scenario_by_id.get(scenario_id)
         if scenario is None:
-            raise ValueError(f"unknown scenario_id in evaluation result: {scenario_id!r}")
+            raise ValueError(
+                f"unknown scenario_id in evaluation result: {scenario_id!r}")
         pass_index = int(result.get("pass_index", 0))
         packets.append(
             HumanReviewPacket(

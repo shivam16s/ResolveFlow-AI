@@ -73,8 +73,9 @@ export const api = {
       get<{customers: {customer_id: string, name: string, risk_segment: string}[]}>("/api/rag/customers"),
   },
   overview: {
-    kpi:    () => get<KpiOverview>("/api/dashboard/overview"),
-    charts: () => get<OverviewCharts>("/api/dashboard/charts"),
+    kpi:      () => get<KpiOverview>("/api/dashboard/overview"),
+    charts:   () => get<OverviewCharts>("/api/dashboard/charts"),
+    insights: () => get<{insights: string}>("/api/insights"),
   },
   cases: {
     list:       (page = 1, limit = 20) => get<CaseListResponse>(`/api/cases?page=${page}&limit=${limit}`),

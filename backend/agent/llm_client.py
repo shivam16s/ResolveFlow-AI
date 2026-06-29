@@ -27,12 +27,15 @@ class GeminiGenerateClient:
         timeout_seconds: int = 45,
     ) -> None:
         env_values = load_env_file(env_path)
-        self.api_key = api_key or os.getenv("GEMINI_API_KEY") or env_values.get("GEMINI_API_KEY", "")
-        self.model = model or os.getenv("GEMINI_MODEL") or env_values.get("GEMINI_MODEL", "gemini-2.5-flash")
+        self.api_key = api_key or os.getenv(
+            "GEMINI_API_KEY") or env_values.get("GEMINI_API_KEY", "")
+        self.model = model or os.getenv("GEMINI_MODEL") or env_values.get(
+            "GEMINI_MODEL", "gemini-2.5-flash")
         self.timeout_seconds = timeout_seconds
 
         if not self.api_key.strip():
-            raise GeminiClientError("GEMINI_API_KEY is missing. Add it to .env or the process environment.")
+            raise GeminiClientError(
+                "GEMINI_API_KEY is missing. Add it to .env or the process environment.")
 
     def __call__(self, prompt: str) -> str:
         return self.generate(prompt, max_output_tokens=2048)
@@ -70,11 +73,14 @@ class GeminiGenerateClient:
                 payload = json.loads(response.read().decode("utf-8"))
         except HTTPError as exc:
             details = exc.read().decode("utf-8", errors="replace")
-            raise GeminiClientError(f"Gemini request failed with HTTP {exc.code}: {details}") from exc
+            raise GeminiClientError(
+                f"Gemini request failed with HTTP {exc.code}: {details}") from exc
         except URLError as exc:
-            raise GeminiClientError(f"Gemini request failed: {exc.reason}") from exc
+            raise GeminiClientError(
+                f"Gemini request failed: {exc.reason}") from exc
         except json.JSONDecodeError as exc:
-            raise GeminiClientError("Gemini response was not valid JSON") from exc
+            raise GeminiClientError(
+                "Gemini response was not valid JSON") from exc
 
         return _extract_text(payload)
 
@@ -151,9 +157,11 @@ def _extract_text(payload: dict[str, Any]) -> str:
     try:
         parts = payload["candidates"][0]["content"]["parts"]
     except (KeyError, IndexError, TypeError) as exc:
-        raise GeminiClientError(f"Gemini response did not contain candidate text: {payload}") from exc
+        raise GeminiClientError(
+            f"Gemini response did not contain candidate text: {payload}") from exc
 
-    text_parts = [str(part.get("text", "")) for part in parts if isinstance(part, dict)]
+    text_parts = [str(part.get("text", ""))
+                  for part in parts if isinstance(part, dict)]
     text = "".join(text_parts).strip()
     if not text:
         raise GeminiClientError(f"Gemini response text was empty: {payload}")

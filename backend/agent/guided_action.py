@@ -124,7 +124,8 @@ class GuidedActionInstruction:
         if self.attempt_number < 1:
             raise ValueError("attempt_number must be at least 1")
         if self.state != GuidedActionState.WAITING:
-            raise ValueError("guided action instructions must leave the coordinator in WAITING")
+            raise ValueError(
+                "guided action instructions must leave the coordinator in WAITING")
 
     def to_dict(self) -> dict[str, Any]:
         payload = asdict(self)
@@ -147,7 +148,8 @@ class GuidedActionVerification:
         _require_text(self.user_report, "user_report")
         _require_text(self.tool_name, "tool_name")
         if self.state not in {GuidedActionState.RESOLVED, GuidedActionState.FAILED}:
-            raise ValueError("guided action verification must end in RESOLVED or FAILED")
+            raise ValueError(
+                "guided action verification must end in RESOLVED or FAILED")
 
     def to_dict(self) -> dict[str, Any]:
         payload = asdict(self)
@@ -185,7 +187,8 @@ class GuidedActionCoordinator:
     state: GuidedActionState = GuidedActionState.IDLE
     attempt_count: int = 0
     max_attempts: int = MAX_ATTEMPTS
-    transition_history: list[GuidedActionTransition] = field(default_factory=list)
+    transition_history: list[GuidedActionTransition] = field(
+        default_factory=list)
     audit_events: list[GuidedActionAuditEvent] = field(default_factory=list)
     context: dict[str, Any] = field(default_factory=dict)
     current_instruction: GuidedActionInstruction | None = None
@@ -237,7 +240,8 @@ class GuidedActionCoordinator:
         normalized_next = _coerce_state(next_state)
         normalized_reason = _require_text(reason, "reason")
         if not self.can_transition_to(normalized_next):
-            raise ValueError(f"invalid guided action transition: {self.state.value} -> {normalized_next.value}")
+            raise ValueError(
+                f"invalid guided action transition: {self.state.value} -> {normalized_next.value}")
 
         transition = GuidedActionTransition(
             from_state=self.state,
@@ -276,15 +280,18 @@ class GuidedActionCoordinator:
         timestamp: str | None = None,
     ) -> GuidedActionInstruction:
         if self.state not in {GuidedActionState.IDLE, GuidedActionState.VERIFYING, GuidedActionState.FAILED}:
-            raise ValueError(f"instruct() cannot run from state {self.state.value}")
+            raise ValueError(
+                f"instruct() cannot run from state {self.state.value}")
         if self.attempt_count >= self.max_attempts:
             raise ValueError("maximum guided action attempts reached")
 
         next_attempt = self.attempt_count + 1
         instruction_text = _single_step_instruction(
-            instruction or _default_instruction_for(self.action_name, next_attempt)
+            instruction or _default_instruction_for(
+                self.action_name, next_attempt)
         )
-        instruction_metadata = {"attempt_number": next_attempt, **dict(metadata or {})}
+        instruction_metadata = {
+            "attempt_number": next_attempt, **dict(metadata or {})}
         self.attempt_count = next_attempt
         self.transition(
             GuidedActionState.WAITING,
@@ -314,14 +321,17 @@ class GuidedActionCoordinator:
         timestamp: str | None = None,
     ) -> GuidedActionVerification:
         if self.state != GuidedActionState.WAITING:
-            raise ValueError(f"handle_user_report() cannot run from state {self.state.value}")
+            raise ValueError(
+                f"handle_user_report() cannot run from state {self.state.value}")
         normalized_report = _require_text(user_report, "user_report")
         if verification_tool is not None and not callable(verification_tool):
             raise ValueError("verification_tool must be callable")
-        action_tool = resolve_action_tool(self.action_name, tool_registry=tool_registry) if verification_tool is None else None
+        action_tool = resolve_action_tool(
+            self.action_name, tool_registry=tool_registry) if verification_tool is None else None
         resolved_tool = verification_tool or action_tool.tool
         normalized_tool_name = _require_text(
-            tool_name or (action_tool.tool_name if action_tool else getattr(resolved_tool, "__name__", "verification_tool")),
+            tool_name or (action_tool.tool_name if action_tool else getattr(
+                resolved_tool, "__name__", "verification_tool")),
             "tool_name",
         )
 
@@ -375,9 +385,11 @@ class GuidedActionCoordinator:
         timestamp: str | None = None,
     ) -> GuidedActionHandoff:
         if self.state != GuidedActionState.FAILED:
-            raise ValueError(f"escalate_to_handoff() cannot run from state {self.state.value}")
+            raise ValueError(
+                f"escalate_to_handoff() cannot run from state {self.state.value}")
         if self.can_retry:
-            raise ValueError("guided action still has retry attempts remaining")
+            raise ValueError(
+                "guided action still has retry attempts remaining")
         if handoff_builder is not None and not callable(handoff_builder):
             raise ValueError("handoff_builder must be callable when provided")
 
@@ -392,7 +404,8 @@ class GuidedActionCoordinator:
             if isinstance(customer_message, str)
             else "I could not confirm the fix after the guided steps, so I am connecting you to a specialist."
         )
-        normalized_customer_message = _require_text(normalized_customer_message, "customer_message")
+        normalized_customer_message = _require_text(
+            normalized_customer_message, "customer_message")
         context_card = _handoff_context_card(self)
         handoff_metadata = {
             "attempt_count": self.attempt_count,
@@ -470,13 +483,15 @@ def resolve_action_tool(
     normalized_action = _require_text(action_name, "action_name")
     tool_name = ACTION_TO_TOOL_MAP.get(normalized_action)
     if tool_name is None:
-        raise ValueError(f"no verification tool mapped for guided action: {normalized_action}")
+        raise ValueError(
+            f"no verification tool mapped for guided action: {normalized_action}")
     if tool_registry is not None and not isinstance(tool_registry, dict):
         raise ValueError("tool_registry must be a dict when provided")
     registry = tool_registry if tool_registry is not None else _default_tool_registry()
     tool = registry.get(tool_name)
     if not callable(tool):
-        raise ValueError(f"mapped verification tool is not available: {tool_name}")
+        raise ValueError(
+            f"mapped verification tool is not available: {tool_name}")
     return GuidedActionTool(action_name=normalized_action, tool_name=tool_name, tool=tool)
 
 
@@ -512,10 +527,12 @@ def _default_instruction_for(action_name: str, attempt_number: int) -> str:
 def _single_step_instruction(instruction: str) -> str:
     normalized = _require_text(instruction, "instruction")
     if "\n" in normalized or "\r" in normalized:
-        raise ValueError("instruction must be a single step, not a multi-line list")
+        raise ValueError(
+            "instruction must be a single step, not a multi-line list")
     stripped = normalized.lstrip()
     if stripped.startswith(("-", "*", "1.", "2.", "3.")):
-        raise ValueError("instruction must be one single step, not a list item")
+        raise ValueError(
+            "instruction must be one single step, not a list item")
     return normalized
 
 
@@ -523,7 +540,8 @@ def _normalize_tool_result(raw_tool_result: Any) -> dict[str, Any]:
     if hasattr(raw_tool_result, "to_dict") and callable(raw_tool_result.to_dict):
         raw_tool_result = raw_tool_result.to_dict()
     if not isinstance(raw_tool_result, dict):
-        raise ValueError("verification_tool must return a dict or an object with to_dict()")
+        raise ValueError(
+            "verification_tool must return a dict or an object with to_dict()")
     return dict(raw_tool_result)
 
 
@@ -533,7 +551,8 @@ def _normalize_optional_dict(raw_value: Any) -> dict[str, Any] | None:
     if hasattr(raw_value, "to_dict") and callable(raw_value.to_dict):
         raw_value = raw_value.to_dict()
     if not isinstance(raw_value, dict):
-        raise ValueError("handoff_builder must return a dict, None, or an object with to_dict()")
+        raise ValueError(
+            "handoff_builder must return a dict, None, or an object with to_dict()")
     return dict(raw_value)
 
 
@@ -569,7 +588,8 @@ def _handoff_context_card(coordinator: GuidedActionCoordinator) -> dict[str, Any
         "attempt_count": coordinator.attempt_count,
         "max_attempts": coordinator.max_attempts,
         "current_instruction": (
-            coordinator.current_instruction.to_dict() if coordinator.current_instruction else None
+            coordinator.current_instruction.to_dict(
+            ) if coordinator.current_instruction else None
         ),
         "last_verification": coordinator.last_verification.to_dict() if coordinator.last_verification else None,
         "transition_history": [transition.to_dict() for transition in coordinator.transition_history],

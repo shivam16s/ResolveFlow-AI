@@ -159,7 +159,8 @@ class SelfRAGRetrieveDecider:
         if not normalized:
             raise ValueError("query must not be empty")
 
-        raw_output = self.llm_client(build_retrieve_decision_prompt(normalized))
+        raw_output = self.llm_client(
+            build_retrieve_decision_prompt(normalized))
         payload = _extract_json_object(raw_output)
         return _decision_from_payload(payload)
 
@@ -206,8 +207,10 @@ class CRAGRelevanceEvaluator:
         if not normalized_document:
             raise ValueError("document must not be empty")
 
-        raw_output = self.llm_client(build_crag_relevance_prompt(normalized_query, normalized_document))
-        payload = _extract_json_object(raw_output, error_prefix="CRAG relevance")
+        raw_output = self.llm_client(build_crag_relevance_prompt(
+            normalized_query, normalized_document))
+        payload = _extract_json_object(
+            raw_output, error_prefix="CRAG relevance")
         return _evaluation_from_payload(payload)
 
     def evaluate_json(self, query: str, document: str) -> str:
@@ -253,7 +256,8 @@ def crag_correct_path(
     for strip in strips:
         evaluation = evaluator.evaluate(normalized_query, strip.text)
         if evaluation.score > threshold:
-            refined.append(ScoredPolicyStrip(strip=strip, evaluation=evaluation))
+            refined.append(ScoredPolicyStrip(
+                strip=strip, evaluation=evaluation))
 
     refined.sort(
         key=lambda item: (
@@ -281,8 +285,10 @@ class CRAGKeywordRewriter:
         if not normalized:
             raise ValueError("query must not be empty")
 
-        raw_output = self.llm_client(build_crag_keyword_rewrite_prompt(normalized))
-        payload = _extract_json_object(raw_output, error_prefix="CRAG keyword rewrite")
+        raw_output = self.llm_client(
+            build_crag_keyword_rewrite_prompt(normalized))
+        payload = _extract_json_object(
+            raw_output, error_prefix="CRAG keyword rewrite")
         return _rewrite_from_payload(payload, original_query=normalized)
 
 
@@ -312,9 +318,11 @@ def crag_incorrect_path(
     if not 0.0 <= threshold <= 1.0:
         raise ValueError("threshold must be between 0.0 and 1.0")
     if not hasattr(policy_store, "query"):
-        raise ValueError("policy_store must provide a query(query_text, top_k) method")
+        raise ValueError(
+            "policy_store must provide a query(query_text, top_k) method")
 
-    rewrite = CRAGKeywordRewriter(llm_client=llm_client).rewrite(normalized_query)
+    rewrite = CRAGKeywordRewriter(
+        llm_client=llm_client).rewrite(normalized_query)
     retry_results = policy_store.query(rewrite.rewritten_query, top_k=top_k)
     candidates = _policy_candidates_from_query_results(retry_results)
     evaluator = CRAGRelevanceEvaluator(llm_client=llm_client)
@@ -322,7 +330,8 @@ def crag_incorrect_path(
     strips_considered = 0
 
     for candidate in candidates:
-        source_id = str(candidate.get("id") or candidate.get("metadata", {}).get("policy_id") or "policy")
+        source_id = str(candidate.get("id") or candidate.get(
+            "metadata", {}).get("policy_id") or "policy")
         strips = decompose_policy_to_strips(
             str(candidate["document"]),
             source_id=source_id,
@@ -332,7 +341,8 @@ def crag_incorrect_path(
         for strip in strips:
             evaluation = evaluator.evaluate(normalized_query, strip.text)
             if evaluation.score > threshold:
-                refined.append(ScoredPolicyStrip(strip=strip, evaluation=evaluation))
+                refined.append(ScoredPolicyStrip(
+                    strip=strip, evaluation=evaluation))
 
     refined.sort(
         key=lambda item: (
@@ -451,8 +461,10 @@ def score_answer_support_usefulness(
             evidence=evidence,
         )
 
-    raw_output = llm_client(build_answer_support_usefulness_prompt(normalized_query, normalized_answer, evidence))
-    payload = _extract_json_object(raw_output, error_prefix="answer support/usefulness")
+    raw_output = llm_client(build_answer_support_usefulness_prompt(
+        normalized_query, normalized_answer, evidence))
+    payload = _extract_json_object(
+        raw_output, error_prefix="answer support/usefulness")
     return _answer_score_from_payload(payload, evidence)
 
 
@@ -600,7 +612,8 @@ def rule_based_relevance_evaluation(query: str, document: str) -> CRAGRelevanceE
         )
 
     overlap = sorted(query_terms & document_terms)
-    policy_signal = _policy_signal_score(normalized_query.lower(), normalized_document.lower())
+    policy_signal = _policy_signal_score(
+        normalized_query.lower(), normalized_document.lower())
     lexical_score = len(overlap) / max(len(query_terms), 1)
     score = min(1.0, (0.65 * lexical_score) + (0.35 * policy_signal))
     return _evaluation(
@@ -633,10 +646,13 @@ def rule_based_keyword_rewrite(query: str) -> PolicyQueryRewrite:
             keywords.extend(triggers)
 
     if not keywords:
-        keywords = [term for term in _content_terms(normalized) if term not in STOPWORDS]
+        keywords = [term for term in _content_terms(
+            normalized) if term not in STOPWORDS]
 
-    clean_keywords = _dedupe([keyword for keyword in keywords if keyword.strip()])[:12]
-    rewritten_query = " ".join(clean_keywords) if clean_keywords else normalized
+    clean_keywords = _dedupe(
+        [keyword for keyword in keywords if keyword.strip()])[:12]
+    rewritten_query = " ".join(
+        clean_keywords) if clean_keywords else normalized
     return PolicyQueryRewrite(
         rewritten_query=rewritten_query,
         keywords=clean_keywords,
@@ -663,15 +679,19 @@ def rule_based_answer_support_usefulness(
     support_overlap = answer_terms & evidence_terms
     usefulness_overlap = query_terms & answer_terms
     support_score = min(1.0, len(support_overlap) / max(len(answer_terms), 1))
-    usefulness_score = min(1.0, len(usefulness_overlap) / max(len(query_terms), 1))
+    usefulness_score = min(
+        1.0, len(usefulness_overlap) / max(len(query_terms), 1))
     missing_claims = []
     if support_score < CRAG_RELEVANT_THRESHOLD:
-        missing_claims.append("Answer contains too few terms grounded in supplied policy evidence.")
+        missing_claims.append(
+            "Answer contains too few terms grounded in supplied policy evidence.")
     if usefulness_score < CRAG_RELEVANT_THRESHOLD:
-        missing_claims.append("Answer does not directly cover enough of the customer query.")
+        missing_claims.append(
+            "Answer does not directly cover enough of the customer query.")
 
     return AnswerSupportUsefulnessScore(
-        is_sup=support_score >= CRAG_RELEVANT_THRESHOLD and bool(cited_strip_ids),
+        is_sup=support_score >= CRAG_RELEVANT_THRESHOLD and bool(
+            cited_strip_ids),
         is_use=usefulness_score >= CRAG_RELEVANT_THRESHOLD,
         support_score=round(support_score, 2),
         usefulness_score=round(usefulness_score, 2),
@@ -743,14 +763,16 @@ def _looks_like_context_dependent_followup(text: str) -> bool:
 
 def _extract_json_object(raw_output: str, *, error_prefix: str = "retrieve decision") -> dict:
     cleaned = raw_output.strip()
-    fenced = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", cleaned, flags=re.DOTALL)
+    fenced = re.search(
+        r"```(?:json)?\s*(\{.*?\})\s*```", cleaned, flags=re.DOTALL)
     if fenced:
         cleaned = fenced.group(1)
 
     try:
         payload = json.loads(cleaned)
     except json.JSONDecodeError as exc:
-        raise ValueError(f"{error_prefix} LLM output was not valid JSON: {exc}") from exc
+        raise ValueError(
+            f"{error_prefix} LLM output was not valid JSON: {exc}") from exc
 
     if not isinstance(payload, dict):
         raise ValueError(f"{error_prefix} LLM output must be a JSON object")
@@ -764,7 +786,8 @@ def _decision_from_payload(payload: dict) -> RetrieveDecision:
     return _decision(
         token=token,
         confidence=_clean_confidence(payload.get("confidence", 0.7)),
-        reason=str(payload.get("reason", "")).strip() or "LLM retrieval decision.",
+        reason=str(payload.get("reason", "")).strip(
+        ) or "LLM retrieval decision.",
     )
 
 
@@ -787,7 +810,8 @@ def _evaluation_from_payload(payload: dict) -> CRAGRelevanceEvaluation:
         score=score,
         is_relevant=relevance == "relevant",
         route=_route_for_relevance(relevance),
-        rationale=re.sub(r"\s+", " ", str(payload.get("rationale", "")).strip()) or "LLM relevance evaluation.",
+        rationale=re.sub(r"\s+", " ", str(payload.get("rationale", "")
+                                          ).strip()) or "LLM relevance evaluation.",
         evidence_terms=_dedupe(evidence_terms)[:8],
     )
 
@@ -800,16 +824,19 @@ def _rewrite_from_payload(payload: dict, *, original_query: str) -> PolicyQueryR
         if str(keyword).strip()
     ]
     keywords = _dedupe(keywords)[:12]
-    rewritten_query = re.sub(r"\s+", " ", str(payload.get("rewritten_query", "")).strip())
+    rewritten_query = re.sub(
+        r"\s+", " ", str(payload.get("rewritten_query", "")).strip())
     if not rewritten_query:
         rewritten_query = " ".join(keywords)
     if not rewritten_query:
-        rewritten_query = rule_based_keyword_rewrite(original_query).rewritten_query
+        rewritten_query = rule_based_keyword_rewrite(
+            original_query).rewritten_query
 
     return PolicyQueryRewrite(
         rewritten_query=rewritten_query,
         keywords=keywords or rewritten_query.split(),
-        reason=re.sub(r"\s+", " ", str(payload.get("reason", "")).strip()) or "LLM keyword rewrite.",
+        reason=re.sub(r"\s+", " ", str(payload.get("reason", "")
+                                       ).strip()) or "LLM keyword rewrite.",
     )
 
 
@@ -827,8 +854,10 @@ def _answer_score_from_payload(payload: dict, evidence: list[dict]) -> AnswerSup
     ]
     support_score = _clean_confidence(payload.get("support_score", 0.0))
     usefulness_score = _clean_confidence(payload.get("usefulness_score", 0.0))
-    is_sup = bool(payload.get("is_sup")) and support_score >= CRAG_RELEVANT_THRESHOLD and bool(cited_strip_ids)
-    is_use = bool(payload.get("is_use")) and usefulness_score >= CRAG_RELEVANT_THRESHOLD
+    is_sup = bool(payload.get(
+        "is_sup")) and support_score >= CRAG_RELEVANT_THRESHOLD and bool(cited_strip_ids)
+    is_use = bool(payload.get("is_use")
+                  ) and usefulness_score >= CRAG_RELEVANT_THRESHOLD
     return AnswerSupportUsefulnessScore(
         is_sup=is_sup,
         is_use=is_use,
@@ -836,7 +865,8 @@ def _answer_score_from_payload(payload: dict, evidence: list[dict]) -> AnswerSup
         usefulness_score=usefulness_score,
         cited_strip_ids=_dedupe(cited_strip_ids),
         missing_claims=missing_claims[:8],
-        rationale=re.sub(r"\s+", " ", str(payload.get("rationale", "")).strip()) or "LLM [IsSup]/[IsUse] evaluation.",
+        rationale=re.sub(r"\s+", " ", str(payload.get("rationale", "")
+                                          ).strip()) or "LLM [IsSup]/[IsUse] evaluation.",
     )
 
 
@@ -974,7 +1004,8 @@ def _policy_candidates_from_query_results(results: dict) -> list[dict]:
     for index, document in enumerate(documents):
         if not str(document).strip():
             continue
-        metadata = metadatas[index] if index < len(metadatas) and isinstance(metadatas[index], dict) else {}
+        metadata = metadatas[index] if index < len(
+            metadatas) and isinstance(metadatas[index], dict) else {}
         candidates.append(
             {
                 "id": ids[index] if index < len(ids) else metadata.get("policy_id", f"policy-{index}"),
@@ -996,7 +1027,8 @@ def _score_policy_strips(
     for strip in strips:
         evaluation = evaluator.evaluate(query, strip.text)
         if evaluation.score > threshold:
-            refined.append(ScoredPolicyStrip(strip=strip, evaluation=evaluation))
+            refined.append(ScoredPolicyStrip(
+                strip=strip, evaluation=evaluation))
     return refined
 
 
@@ -1022,10 +1054,13 @@ def _normalize_external_policy_strips(
         if isinstance(item, str):
             text = item
         elif isinstance(item, dict):
-            text = str(item.get("text") or item.get("content") or item.get("document") or "")
-            source_id = str(item.get("source_id") or item.get("url") or source_id)
+            text = str(item.get("text") or item.get(
+                "content") or item.get("document") or "")
+            source_id = str(item.get("source_id")
+                            or item.get("url") or source_id)
         else:
-            raise ValueError("external strips must be strings, dicts, or PolicyStrip objects")
+            raise ValueError(
+                "external strips must be strings, dicts, or PolicyStrip objects")
 
         text = re.sub(r"\s+", " ", text.strip())
         if not text:
@@ -1053,8 +1088,10 @@ def _normalize_answer_evidence(evidence_strips: list[ScoredPolicyStrip | PolicyS
             strip = item
             score = None
         elif isinstance(item, dict):
-            strip_id = str(item.get("strip_id") or item.get("id") or f"evidence-{index}")
-            text = re.sub(r"\s+", " ", str(item.get("text") or item.get("document") or "").strip())
+            strip_id = str(item.get("strip_id") or item.get(
+                "id") or f"evidence-{index}")
+            text = re.sub(r"\s+", " ", str(item.get("text")
+                          or item.get("document") or "").strip())
             if not text:
                 continue
             evidence.append(
@@ -1067,7 +1104,8 @@ def _normalize_answer_evidence(evidence_strips: list[ScoredPolicyStrip | PolicyS
             )
             continue
         else:
-            raise ValueError("evidence_strips must contain ScoredPolicyStrip, PolicyStrip, or dict values")
+            raise ValueError(
+                "evidence_strips must contain ScoredPolicyStrip, PolicyStrip, or dict values")
 
         evidence.append(
             {
@@ -1103,15 +1141,18 @@ def _markdown_sections(document: str) -> list[str]:
 
     paragraphs = []
     for section in sections:
-        section_parts = [part.strip() for part in re.split(r"\n\s*\n", section) if part.strip()]
+        section_parts = [part.strip() for part in re.split(
+            r"\n\s*\n", section) if part.strip()]
         if len(section_parts) <= 1:
             paragraphs.append(section)
         else:
-            heading = section_parts[0] if section_parts[0].startswith("#") else ""
+            heading = section_parts[0] if section_parts[0].startswith(
+                "#") else ""
             for part in section_parts:
                 if part == heading:
                     continue
-                paragraphs.append(f"{heading}\n{part}".strip() if heading else part)
+                paragraphs.append(
+                    f"{heading}\n{part}".strip() if heading else part)
 
     return [paragraph for paragraph in paragraphs if paragraph]
 
@@ -1123,7 +1164,7 @@ def _strip_windows(text: str, *, max_strip_tokens: int) -> list[str]:
     if len(tokens) <= max_strip_tokens:
         return [" ".join(tokens)]
     return [
-        " ".join(tokens[index : index + max_strip_tokens])
+        " ".join(tokens[index: index + max_strip_tokens])
         for index in range(0, len(tokens), max_strip_tokens)
     ]
 

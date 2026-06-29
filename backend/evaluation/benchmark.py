@@ -3,8 +3,6 @@ from __future__ import annotations
 import json
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Any
-
 from .ragas import evaluate_policy_retrievals_with_ragas
 from .reporting import generate_metric_report
 from .runner import run_evaluation
@@ -128,13 +126,17 @@ def generate_benchmark_comparison(
     db_path: Path | None = None,
 ) -> dict:
     if evaluation_result is None:
-        evaluation_result = run_evaluation(k=k, scenarios_path=scenarios_path, db_path=db_path)
+        evaluation_result = run_evaluation(
+            k=k, scenarios_path=scenarios_path, db_path=db_path)
     if not isinstance(evaluation_result, dict):
         raise ValueError("evaluation_result must be a dict when provided")
 
-    metric_report = metric_report or generate_metric_report(evaluation_result, scenarios_path=scenarios_path)
-    ragas_report = ragas_report or evaluate_policy_retrievals_with_ragas(evaluation_result, scenarios_path=scenarios_path)
-    normalized_baselines = _normalize_baselines(DEFAULT_TAU_BENCH_BASELINES if baselines is None else baselines)
+    metric_report = metric_report or generate_metric_report(
+        evaluation_result, scenarios_path=scenarios_path)
+    ragas_report = ragas_report or evaluate_policy_retrievals_with_ragas(
+        evaluation_result, scenarios_path=scenarios_path)
+    normalized_baselines = _normalize_baselines(
+        DEFAULT_TAU_BENCH_BASELINES if baselines is None else baselines)
     metric_rows = _metric_rows(metric_report, normalized_baselines)
     ragas_rows = _ragas_rows(ragas_report)
     rows = metric_rows + ragas_rows
@@ -143,8 +145,10 @@ def generate_benchmark_comparison(
         generated_from="resolveflow_evaluation_harness",
         pass_k=int(evaluation_result.get("pass_k", k)),
         scenario_count=int(evaluation_result.get("scenario_count", 0)),
-        total_runs=int(evaluation_result.get("total_runs", len(evaluation_result.get("results", [])))),
-        baseline_snapshot_date=max(baseline.retrieved_date for baseline in normalized_baselines),
+        total_runs=int(evaluation_result.get(
+            "total_runs", len(evaluation_result.get("results", [])))),
+        baseline_snapshot_date=max(
+            baseline.retrieved_date for baseline in normalized_baselines),
         baselines=normalized_baselines,
         rows=rows,
         ragas_rows=ragas_rows,
@@ -241,7 +245,8 @@ def _comparison_row(
     notes: str,
 ) -> BenchmarkComparisonRow:
     delta = round(resolveflow_score - baseline.score, 4)
-    ratio = round(resolveflow_score / baseline.score, 4) if baseline.score else None
+    ratio = round(resolveflow_score / baseline.score,
+                  4) if baseline.score else None
     return BenchmarkComparisonRow(
         row_id=row_id,
         category=category,
@@ -260,7 +265,8 @@ def _comparison_row(
 def _metric_value(metrics: dict, metric_name: str) -> float:
     metric = metrics.get(metric_name)
     if not isinstance(metric, dict) or metric.get("value") is None:
-        raise ValueError(f"metric_report.metrics.{metric_name}.value is required")
+        raise ValueError(
+            f"metric_report.metrics.{metric_name}.value is required")
     return round(float(metric["value"]), 4)
 
 
@@ -274,7 +280,8 @@ def _normalize_baselines(raw_baselines: list[TauBenchBaseline | dict]) -> list[T
         elif isinstance(item, dict):
             baseline = TauBenchBaseline(**item)
         else:
-            raise ValueError("baseline entries must be TauBenchBaseline or dict objects")
+            raise ValueError(
+                "baseline entries must be TauBenchBaseline or dict objects")
         if baseline.score < 0 or baseline.score > 1:
             raise ValueError("baseline score must be between 0 and 1")
         baselines.append(baseline)

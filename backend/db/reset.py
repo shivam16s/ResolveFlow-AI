@@ -85,6 +85,7 @@ def _clear_tables(db_path: Path) -> None:
 def _table_counts(db_path: Path) -> dict[str, int]:
     with sqlite3.connect(db_path) as connection:
         return {
-            table_name: connection.execute(f"SELECT COUNT(*) FROM {table_name}").fetchone()[0]
+            table_name: connection.execute(
+                f"SELECT COUNT(*) FROM {table_name}").fetchone()[0]
             for table_name in BASELINE_TABLES
         }
