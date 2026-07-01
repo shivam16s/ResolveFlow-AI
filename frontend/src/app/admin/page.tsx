@@ -95,7 +95,7 @@ export default function AdminHarnessPage() {
                   <p className="mt-1 text-[11px] font-mono" style={{ color: "var(--text-muted)" }}>{scenario.case_id}</p>
                 </div>
                 <span className="font-mono" style={{ color: scenario.pass_k >= 1 ? "#34d399" : "#fbbf24" }}>{Math.round(scenario.pass_k * 100)}%</span>
-                <StatusPill tone={scenario.non_collaborative_degradation > 0 ? "amber" : "green"}>NCD {scenario.non_collaborative_degradation.toFixed(2)}</StatusPill>
+                <StatusPill tone={scenario.policy_compliance >= 1 ? "green" : "amber"}>Policy {Math.round(scenario.policy_compliance * 100)}%</StatusPill>
               </div>
             ))}
           </div>

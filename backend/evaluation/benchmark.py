@@ -213,7 +213,7 @@ def _ragas_rows(ragas_report: dict) -> list[BenchmarkComparisonRow]:
     if not isinstance(ragas_report, dict):
         raise ValueError("ragas_report must be a dict")
     rows = []
-    for metric_name in ("average_faithfulness", "average_context_precision"):
+    for metric_name in ("average_context_recall", "average_context_precision"):
         value = ragas_report.get(metric_name)
         if value is None:
             raise ValueError(f"ragas_report.{metric_name} is required")

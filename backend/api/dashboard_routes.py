@@ -8,14 +8,21 @@ import sqlite3
 from typing import Any
 from uuid import uuid4
 
-from fastapi import APIRouter, HTTPException, Request
+# NOTE: This module holds the dashboard controller *functions*. They are mounted
+# as routes by backend/api/routes.py (the single routing surface) — there is no
+# router here, so endpoints can only ever be registered in one place.
+from fastapi import HTTPException, Request
 
-from backend.evaluation import evaluate_policy_retrievals_with_ragas, load_evaluation_scenarios, run_evaluation
+from backend.evaluation import (
+    compute_business_adherence,
+    evaluate_policy_retrievals_with_ragas,
+    load_evaluation_scenarios,
+    run_evaluation,
+)
 from backend.tools import generate_context_card
 from backend.agent.llm_client import LLMClient, GeminiClientError
 
 
-router = APIRouter(prefix="/api", tags=["dashboard"])
 
 ISSUE_COLORS = ["#6366f1", "#10b981",
                 "#f59e0b", "#ef4444", "#14b8a6", "#a855f7"]
@@ -27,14 +34,6 @@ HEALTH_BUCKETS = [
     ("90-100", 90, 100, "#34d399"),
 ]
 
-NCD_BASELINES = {
-    "case_11_impatient_user": 0.22,
-    "case_12_tangential_user": 0.28,
-    "case_13_unavailable_service_request": 0.15,
-}
-
-
-@router.get("/dashboard/overview")
 def dashboard_overview(request: Request) -> dict[str, Any]:
     db_path = Path(request.app.state.db_path)
     with _connect(request.app.state.db_path) as connection:
@@ -74,7 +73,6 @@ def dashboard_overview(request: Request) -> dict[str, Any]:
     }
 
 
-@router.get("/dashboard/charts")
 def dashboard_charts(request: Request) -> dict[str, Any]:
     with _connect(request.app.state.db_path) as connection:
         return {
@@ -85,7 +83,6 @@ def dashboard_charts(request: Request) -> dict[str, Any]:
         }
 
 
-@router.get("/cases")
 def list_cases(request: Request, page: int = 1, limit: int = 20) -> dict[str, Any]:
     page = max(1, page)
     limit = min(max(1, limit), 100)
@@ -126,7 +123,6 @@ def list_cases(request: Request, page: int = 1, limit: int = 20) -> dict[str, An
     }
 
 
-@router.get("/cases/{case_id}")
 def case_detail(case_id: str, request: Request) -> dict[str, Any]:
     with _connect(request.app.state.db_path) as connection:
         row = _case_detail_row(connection, case_id)
@@ -170,7 +166,6 @@ def case_detail(case_id: str, request: Request) -> dict[str, Any]:
     }
 
 
-@router.get("/cases/{case_id}/context_card")
 def case_context_card(case_id: str, request: Request) -> dict[str, Any]:
     with _connect(request.app.state.db_path) as connection:
         row = _case_detail_row(connection, case_id)
@@ -198,7 +193,6 @@ def case_context_card(case_id: str, request: Request) -> dict[str, Any]:
     }
 
 
-@router.get("/evaluation/results")
 def evaluation_results(request: Request) -> dict[str, Any]:
     latest = _latest_evaluation_file(_data_dir(request))
     if latest is None:
@@ -212,7 +206,6 @@ def evaluation_results(request: Request) -> dict[str, Any]:
     return _evaluation_report(evaluation, run_id=run_id, run_at=run_at, db_path=Path(request.app.state.db_path))
 
 
-@router.post("/evaluation/run")
 def evaluation_run(request: Request) -> dict[str, Any]:
     result = run_evaluation(k=5)
     run_id = f"eval_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{uuid4().hex[:6]}"
@@ -591,12 +584,18 @@ def _evaluation_report(
         grouped[str(result.get("scenario_id") or "unknown")].append(result)
 
     scenario_policy_scores = _scenario_policy_scores(results)
-    ragas_context_scores = _ragas_context_scores(evaluation)
+    # Compute the RAGAS report once and derive real per-scenario context_recall and
+    # context-precision means from it. Scenarios that never retrieve a policy have
+    # no RAGAS score and are reported as null (n/a) rather than an invented value.
+    ragas_report = _ragas_report(evaluation)
+    ragas_context_scores = _ragas_scenario_means(ragas_report, "context_precision")
+    ragas_context_recall_scores = _ragas_scenario_means(ragas_report, "context_recall")
     scenarios = []
     for scenario_id, items in sorted(grouped.items()):
         passed = sum(1 for item in items if item.get("passed") is True)
         policy_compliance = scenario_policy_scores.get(scenario_id, 1.0)
-        ragas_context_precision = ragas_context_scores.get(scenario_id, 0.95)
+        context_precision = ragas_context_scores.get(scenario_id)
+        context_recall = ragas_context_recall_scores.get(scenario_id)
         scenarios.append(
             {
                 "case_id": scenario_id,
@@ -604,9 +603,8 @@ def _evaluation_report(
                 "pass_k": round(passed / len(items), 4),
                 "avg_turns": _average_customer_turns(items),
                 "policy_compliance": round(policy_compliance, 4),
-                "ragas_faithfulness": round(ragas_context_precision, 4),
-                "ragas_context_precision": round(ragas_context_precision, 4),
-                "non_collaborative_degradation": NCD_BASELINES.get(scenario_id, 0.0),
+                "ragas_context_recall": round(context_recall, 4) if context_recall is not None else None,
+                "ragas_context_precision": round(context_precision, 4) if context_precision is not None else None,
                 "status": "pass" if passed == len(items) else "partial" if passed > 0 else "fail",
             }
         )
@@ -621,8 +619,8 @@ def _evaluation_report(
             if scenarios
             else 0
         )
-    ragas_faithfulness = float(_ragas_report(
-        evaluation).get("average_context_precision") or 0)
+    ragas_context_recall = float(ragas_report.get("average_context_recall") or 0)
+    ragas_context_precision = float(ragas_report.get("average_context_precision") or 0)
     return {
         "run_id": run_id,
         "run_at": run_at,
@@ -630,9 +628,19 @@ def _evaluation_report(
         "pass_rate": pass_rate,
         "avg_pass_k": round(sum(item["pass_k"] for item in scenarios) / len(scenarios), 4) if scenarios else 0,
         "avg_policy_compliance": round(policy_compliance, 4),
-        "avg_ragas_faithfulness": round(ragas_faithfulness, 4),
+        "avg_ragas_context_recall": round(ragas_context_recall, 4),
+        "avg_ragas_context_precision": round(ragas_context_precision, 4),
+        "business_adherence": _business_adherence_report(evaluation),
         "scenarios": scenarios,
     }
+
+
+def _business_adherence_report(evaluation: dict[str, Any]) -> dict[str, Any] | None:
+    """Beyond-IVR business-adherence score derived from the run (best-effort)."""
+    try:
+        return compute_business_adherence(evaluation)
+    except Exception:
+        return None
 
 
 def _scenario_policy_scores(results: list[dict[str, Any]]) -> dict[str, float]:
@@ -666,18 +674,25 @@ def _ragas_report(evaluation: dict[str, Any]) -> dict[str, Any]:
     try:
         return evaluate_policy_retrievals_with_ragas(evaluation)
     except (OSError, ValueError):
-        return {"average_faithfulness": 0.0, "average_context_precision": 0.0, "scores": []}
+        return {"average_context_recall": 0.0, "average_context_precision": 0.0, "scores": []}
 
 
-def _ragas_context_scores(evaluation: dict[str, Any]) -> dict[str, float]:
+def _ragas_scenario_means(ragas_report: dict[str, Any], key: str) -> dict[str, float]:
+    """Per-scenario mean of a RAGAS metric (context_recall or context_precision).
+
+    Scenarios with no policy retrieval simply do not appear, so the caller can
+    report them as n/a instead of substituting a placeholder value.
+    """
     grouped: dict[str, list[float]] = defaultdict(list)
-    for score in _ragas_report(evaluation).get("scores", []):
+    for score in ragas_report.get("scores", []):
         if not isinstance(score, dict):
             continue
         scenario_id = str(score.get("scenario_id") or "")
         if not scenario_id:
             continue
-        grouped[scenario_id].append(float(score.get("context_precision") or 0))
+        value = score.get(key)
+        if value is not None:
+            grouped[scenario_id].append(float(value))
     return {
         scenario_id: round(sum(scores) / len(scores), 4)
         for scenario_id, scores in grouped.items()
@@ -779,7 +794,6 @@ def _tool_names(items: list[Any]) -> list[str]:
     return names
 
 
-@router.get("/insights")
 def dashboard_insights(request: Request) -> dict[str, Any]:
     with _connect(request.app.state.db_path) as connection:
         rows = connection.execute("SELECT session_id, intents FROM conversations ORDER BY created_at DESC LIMIT 20").fetchall()

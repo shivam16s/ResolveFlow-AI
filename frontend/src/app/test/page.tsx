@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
   AlertTriangle,
+  ArrowUpRight,
   Bot,
   Brain,
   CheckCircle2,
@@ -19,7 +20,7 @@ import {
   Wrench,
   X,
 } from "lucide-react";
-import { OutageWidget, InvoiceWidget, CreditWidget } from "../../components/GenerativeUI";
+import { OutageWidget, InvoiceWidget, CreditWidget, RetentionWidget } from "../../components/GenerativeUI";
 
 type CustomerProfile = {
   customer_id: string;
@@ -30,11 +31,26 @@ type CustomerProfile = {
   tone: "red" | "amber" | "green";
 };
 
+type HandoffInfo = {
+  should_handoff?: boolean;
+  reason?: string;
+  severity?: string;
+  customer_message?: string;
+  context_card?: Record<string, unknown>;
+};
+
+type VerifiedClaim = { claim: string; tool: string; receipt_id?: string | null };
+
+type TrustInfo = { score?: number; action?: string; issues?: string[]; threshold?: number };
+
 type ChatMessage = {
   role: "customer" | "agent";
   content: string;
   timestamp: string;
   toolResults?: Record<string, unknown>[];
+  handoff?: HandoffInfo | null;
+  verifiedClaims?: VerifiedClaim[];
+  trust?: TrustInfo | null;
 };
 
 type PipelineStepId = "intent" | "memory" | "policy" | "tools" | "dag" | "response";
@@ -219,9 +235,14 @@ export function LiveAgentConsole({
           start: typeof data.result.relationship_start === "number" ? data.result.relationship_start : relationship.start,
           end: typeof data.result.relationship_end === "number" ? data.result.relationship_end : relationship.end,
         });
+        const handoff = (data.result.handoff as HandoffInfo | null) ?? null;
+        const verifiedClaims = Array.isArray(data.result.verified_claims)
+          ? (data.result.verified_claims as VerifiedClaim[])
+          : [];
+        const trust = (data.result.trust as TrustInfo | null) ?? null;
         setMessages((items) => [
           ...items,
-          { role: "agent", content: text, timestamp: new Date().toISOString(), toolResults: currentToolResults },
+          { role: "agent", content: text, timestamp: new Date().toISOString(), toolResults: currentToolResults, handoff, verifiedClaims, trust },
         ]);
         setStatus("RESOLVED");
         stream.close();
@@ -258,8 +279,8 @@ export function LiveAgentConsole({
         </div>
       </div>
 
-      <div className="grid grid-cols-1 gap-4 xl:grid-cols-[280px_minmax(420px,1fr)_460px] xl:gap-5">
-        <aside className="glass p-4 h-fit">
+      <div className="grid grid-cols-1 gap-4 xl:grid-cols-[280px_minmax(420px,1fr)_460px] xl:gap-5 xl:h-[calc(100vh-180px)] xl:items-stretch xl:min-h-0">
+        <aside className="glass p-4 h-fit xl:h-full xl:min-h-0 xl:overflow-y-auto">
           <p className="text-xs font-semibold uppercase tracking-widest mb-3" style={{ color: "var(--text-muted)" }}>Customer Selector</p>
           <div className="space-y-3">
             {DEMO_CUSTOMERS.map((customer) => {
@@ -291,7 +312,7 @@ export function LiveAgentConsole({
           </div>
         </aside>
 
-        <section className="glass h-[620px] flex flex-col overflow-hidden xl:h-[720px]">
+        <section className="glass h-[620px] flex flex-col overflow-hidden xl:h-full xl:min-h-0">
           <div className="px-5 py-4 border-b flex items-center gap-3" style={{ borderColor: "var(--border)" }}>
             <div className="w-10 h-10 rounded-full flex items-center justify-center" style={{ background: "rgba(20,184,166,0.12)", color: "#5eead4", border: "1px solid rgba(20,184,166,0.25)" }}>
               <User size={18} />
@@ -316,9 +337,14 @@ export function LiveAgentConsole({
                       {message.toolResults && message.toolResults.map((tool: Record<string, unknown>, idx: number) => {
                         if (tool.tool_name === "check_outage_status") return <OutageWidget key={idx} result={tool.result as Record<string, unknown>} />;
                         if (tool.tool_name === "get_invoice_history") return <InvoiceWidget key={idx} result={tool.result as Record<string, unknown>} />;
-                        if (tool.tool_name === "apply_credit") return <CreditWidget key={idx} result={tool.result as Record<string, unknown>} />;
+                        if (tool.tool_name === "apply_credit_guard") return <CreditWidget key={idx} result={tool.result as Record<string, unknown>} />;
+                        if (tool.tool_name === "build_retention_offer") return <RetentionWidget key={idx} result={tool.result as Record<string, unknown>} />;
                         return null;
                       })}
+                      {message.role === "agent" && message.verifiedClaims && message.verifiedClaims.length > 0 && (
+                        <VerifiedEvidence claims={message.verifiedClaims} trust={message.trust} />
+                      )}
+                      {message.handoff && <HandoffBanner handoff={message.handoff} />}
                     </div>
                   </div>
                 </div>
@@ -399,7 +425,7 @@ function ReasoningPanel({
   relationship: { start: number; end: number };
 }) {
   return (
-    <aside className="glass p-4 h-fit">
+    <aside className="glass p-4 h-fit xl:h-full xl:min-h-0 xl:overflow-y-auto">
       <div className="flex items-center justify-between mb-4">
         <div>
           <p className="text-xs font-semibold uppercase tracking-widest" style={{ color: "var(--text-muted)" }}>Live Reasoning</p>
@@ -485,7 +511,87 @@ function StepResult({ step }: { step: PipelineStep }) {
   if (step.id === "dag") {
     return <MiniList items={[String(step.result.dag_name ?? "policy DAG"), `UJCS ${Number(step.result.ujcs ?? 0).toFixed(2)} · ${String(step.result.policy_status ?? "pending").toUpperCase()}`, arrayOfStrings(step.result.path).join(" -> ")].filter(Boolean)} />;
   }
-  return <MiniList items={[`Health updated`, `Empathy mode: ${String(step.result.empathy_mode ?? "STANDARD")}`, `Emotion: ${String(step.result.emotion ?? "neutral")}`, `Relationship ${String(step.result.relationship_start ?? "")} -> ${String(step.result.relationship_end ?? "")}`]} />;
+  const trust = (step.result.trust ?? {}) as { score?: number; action?: string };
+  const trustLine = typeof trust.score === "number" ? `Trust ${trust.score.toFixed(2)} · ${String(trust.action ?? "proceed")}` : "";
+  return <MiniList items={[trustLine, `Empathy mode: ${String(step.result.empathy_mode ?? "STANDARD")}`, `Emotion: ${String(step.result.emotion ?? "neutral")}`, `Relationship ${String(step.result.relationship_start ?? "")} -> ${String(step.result.relationship_end ?? "")}`]} />;
+}
+
+function VerifiedEvidence({ claims, trust }: { claims: VerifiedClaim[]; trust?: TrustInfo | null }) {
+  const [open, setOpen] = useState(false);
+  const score = typeof trust?.score === "number" ? trust.score : null;
+  const action = trust?.action ?? "";
+  const trustColor = score == null ? "#5eead4" : score >= 0.8 ? "#10b981" : score >= 0.6 ? "#f59e0b" : "#ef4444";
+  return (
+    <div className="mt-3">
+      <div className="flex flex-wrap items-center gap-2">
+        <button
+          onClick={() => setOpen((v) => !v)}
+          className="flex items-center gap-1.5 px-2 py-1 rounded-md text-[11px] font-semibold transition-all"
+          style={{ background: "rgba(16,185,129,0.10)", border: "1px solid rgba(16,185,129,0.35)", color: "#10b981" }}
+        >
+          <ShieldCheck size={13} />
+          Verified · {claims.length} evidence {claims.length === 1 ? "receipt" : "receipts"}
+        </button>
+        {score != null && (
+          <span
+            className="px-2 py-1 rounded-md text-[11px] font-mono font-semibold"
+            style={{ background: `${trustColor}1a`, border: `1px solid ${trustColor}55`, color: trustColor }}
+            title={(trust?.issues && trust.issues.length ? trust.issues.join("; ") : "no trust issues") + (trust?.threshold ? ` (threshold ${trust.threshold})` : "")}
+          >
+            Trust {score.toFixed(2)}{action ? ` · ${action}` : ""}
+          </span>
+        )}
+      </div>
+      {open && (
+        <div className="mt-2 space-y-1.5">
+          {claims.map((c, i) => (
+            <div key={i} className="flex items-start gap-2 text-[11px] p-2 rounded-md" style={{ background: "var(--surface-1)", border: "1px solid var(--border)" }}>
+              <ShieldCheck size={12} className="mt-0.5 shrink-0" style={{ color: "#10b981" }} />
+              <div className="min-w-0">
+                <p style={{ color: "var(--text-primary)" }}>{c.claim}</p>
+                <p className="font-mono mt-0.5" style={{ color: "var(--text-muted)" }}>
+                  {c.tool} · {c.receipt_id ?? "no-receipt"}
+                </p>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function HandoffBanner({ handoff }: { handoff: HandoffInfo }) {
+  if (!handoff || !handoff.should_handoff) return null;
+  const card = handoff.context_card ?? {};
+  return (
+    <div className="mt-3 p-3 rounded-xl border" style={{ background: "rgba(168, 85, 247, 0.07)", borderColor: "rgba(168, 85, 247, 0.35)" }}>
+      <div className="flex items-center gap-2 mb-1">
+        <ArrowUpRight size={15} style={{ color: "#c084fc" }} />
+        <h4 className="font-bold text-xs uppercase tracking-wider" style={{ color: "#c084fc" }}>Escalating to human specialist</h4>
+      </div>
+      {handoff.customer_message && (
+        <p className="text-sm" style={{ color: "var(--text-primary)" }}>{handoff.customer_message}</p>
+      )}
+      <div className="mt-2 flex flex-wrap gap-1.5 text-[10px]">
+        {handoff.reason && (
+          <span className="px-2 py-0.5 rounded-md" style={{ background: "var(--surface-1)", border: "1px solid var(--border)", color: "var(--text-muted)" }}>
+            Reason: {handoff.reason}
+          </span>
+        )}
+        {typeof card.health_score !== "undefined" && (
+          <span className="px-2 py-0.5 rounded-md" style={{ background: "var(--surface-1)", border: "1px solid var(--border)", color: "var(--text-muted)" }}>
+            Health {String(card.health_score)}
+          </span>
+        )}
+        {Array.isArray(card.issues) && card.issues.length > 0 && (
+          <span className="px-2 py-0.5 rounded-md" style={{ background: "var(--surface-1)", border: "1px solid var(--border)", color: "var(--text-muted)" }}>
+            Context card: {(card.issues as string[]).join(", ")}
+          </span>
+        )}
+      </div>
+    </div>
+  );
 }
 
 function MiniList({ items }: { items: string[] }) {

@@ -41,7 +41,7 @@ class RAGASPolicyRetrievalScore:
     scenario_id: str
     policy_id: str
     query: str
-    faithfulness: float
+    context_recall: float
     context_precision: float
     context_count: int
     supported_terms: list[str]
@@ -55,7 +55,7 @@ class RAGASPolicyRetrievalScore:
 @dataclass(frozen=True)
 class RAGASEvaluationReport:
     retrieval_count: int
-    average_faithfulness: float
+    average_context_recall: float
     average_context_precision: float
     scores: list[RAGASPolicyRetrievalScore]
     source: str = "ragas_compatible_policy_retrieval_evaluation"
@@ -96,7 +96,7 @@ def evaluate_policy_retrievals_with_ragas(
 
     return RAGASEvaluationReport(
         retrieval_count=len(scores),
-        average_faithfulness=_average(score.faithfulness for score in scores),
+        average_context_recall=_average(score.context_recall for score in scores),
         average_context_precision=_average(
             score.context_precision for score in scores),
         scores=scores,
@@ -117,7 +117,7 @@ def _score_retrieval(
     context_text = " ".join(contexts).lower()
     supported_terms = [term for term in answer_terms if term in context_text]
     missing_terms = [term for term in answer_terms if term not in context_text]
-    faithfulness = round(len(supported_terms) /
+    context_recall = round(len(supported_terms) /
                          len(answer_terms), 4) if answer_terms else 1.0
     relevant_ranks = _relevant_context_ranks(
         contexts, query=query, answer_terms=answer_terms)
@@ -128,7 +128,7 @@ def _score_retrieval(
         scenario_id=scenario.scenario_id,
         policy_id=policy_id,
         query=query,
-        faithfulness=faithfulness,
+        context_recall=context_recall,
         context_precision=context_precision,
         context_count=len(contexts),
         supported_terms=supported_terms,
@@ -175,21 +175,30 @@ def _contexts(retrieval: dict) -> list[str]:
 
 
 def _answer_terms(scenario: EvaluationScenario, policy_id: str) -> list[str]:
+    """Policy-concept terms the answer relies on, for context_recall scoring.
+
+    Context recall asks whether the concepts the answer depends on are grounded in
+    the retrieved policy context. We therefore build expected terms from the
+    policy name and the conceptual success criteria, and deliberately EXCLUDE raw
+    expected-artifact data values (specific amounts, invoice/credit IDs, status
+    enums) and bare numbers: those are case-specific outcomes a policy document
+    never restates verbatim, so counting them would understate context_recall by
+    construction rather than measure real grounding.
+    """
     terms = set(_tokens(policy_id.replace("_", " ")))
     for policy in scenario.goal_state.get("required_policies", []):
         if policy == policy_id:
             terms.update(_tokens(policy.replace("_", " ")))
     for criterion in scenario.goal_state.get("success_criteria", []):
         terms.update(_tokens(str(criterion)))
-    expected_artifacts = scenario.goal_state.get("expected_artifacts", {})
-    if isinstance(expected_artifacts, dict):
-        for value in expected_artifacts.values():
-            if isinstance(value, str):
-                terms.update(_tokens(value))
-            elif isinstance(value, list):
-                for item in value:
-                    terms.update(_tokens(str(item)))
-    return sorted(term for term in terms if len(term) >= 4)
+    return sorted(
+        term for term in terms
+        if len(term) >= 4 and not _is_numeric(term)
+    )
+
+
+def _is_numeric(token: str) -> bool:
+    return bool(re.fullmatch(r"\d+(?:\.\d+)?", token))
 
 
 def _relevant_context_ranks(contexts: list[str], *, query: str, answer_terms: list[str]) -> list[int]:

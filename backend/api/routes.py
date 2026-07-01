@@ -236,6 +236,12 @@ def trigger_evaluation(request: Request, background_tasks: BackgroundTasks) -> J
     return JSONResponse(dashboard_data.evaluation_run(request))
 
 
+@dashboard_router.get("/insights")
+def dashboard_insights_endpoint(request: Request) -> JSONResponse:
+    """God-Mode AI insights: LLM root-cause synthesis over recent interactions."""
+    return JSONResponse(dashboard_data.dashboard_insights(request))
+
+
 @tools_router.get("/lookup_customer/{customer_id}", response_model=ToolResponse)
 def lookup_customer_endpoint(customer_id: str, request: Request) -> ToolResponse:
     try:

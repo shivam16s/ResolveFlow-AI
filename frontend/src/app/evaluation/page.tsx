@@ -7,7 +7,7 @@ import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip,
   ResponsiveContainer, RadarChart, Radar, PolarGrid, PolarAngleAxis, Cell,
 } from "recharts";
-import { FlaskConical, Play, CheckCircle2, XCircle, AlertCircle, RefreshCw } from "lucide-react";
+import { FlaskConical, Play, CheckCircle2, XCircle, AlertCircle, RefreshCw, ShieldCheck } from "lucide-react";
 import { api } from "@/lib/api";
 import { formatPct, formatDate } from "@/lib/utils";
 import type { EvaluationReport, ScenarioResult } from "@/lib/types";
@@ -44,13 +44,19 @@ export default function EvaluationPage() {
   if (error && !report) return <div className="p-6 max-w-7xl"><StatePanel label="Could not load evaluation results from FastAPI." /></div>;
   if (!report) return <div className="p-6 max-w-7xl"><StatePanel label="No evaluation run available." /></div>;
 
-  const contextPrecision = report.scenarios.length
-    ? report.scenarios.reduce((sum, item) => sum + item.ragas_context_precision, 0) / report.scenarios.length
-    : 0;
+  const contextValues = report.scenarios
+    .map((item) => item.ragas_context_precision)
+    .filter((value): value is number => typeof value === "number");
+  const contextPrecision = typeof report.avg_ragas_context_precision === "number"
+    ? report.avg_ragas_context_precision
+    : contextValues.length
+      ? contextValues.reduce((sum, value) => sum + value, 0) / contextValues.length
+      : 0;
+  const ba = report.business_adherence ?? null;
   const radarData = [
     { metric: "Pass@5", value: report.avg_pass_k * 100 },
     { metric: "Policy", value: report.avg_policy_compliance * 100 },
-    { metric: "Faithful", value: report.avg_ragas_faithfulness * 100 },
+    { metric: "Adherence", value: (ba?.business_adherence_score ?? 0) * 100 },
     { metric: "Context", value: contextPrecision * 100 },
     { metric: "Pass Rate", value: report.pass_rate * 100 },
   ];
@@ -101,7 +107,7 @@ export default function EvaluationPage() {
           { title: "Pass Rate", value: formatPct(report.pass_rate * 100), color: report.pass_rate >= 0.8 ? "#10b981" : "#f59e0b" },
           { title: "Avg Pass@5", value: formatPct(report.avg_pass_k * 100), color: "#14b8a6" },
           { title: "Policy Compliance", value: formatPct(report.avg_policy_compliance * 100), color: "#10b981" },
-          { title: "RAGAS Faithfulness", value: formatPct(report.avg_ragas_faithfulness * 100), color: "#6366f1" },
+          { title: "RAGAS Context Precision", value: formatPct((report.avg_ragas_context_precision ?? contextPrecision) * 100), color: "#6366f1" },
         ].map((item, index) => (
           <motion.div key={item.title} initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: index * 0.04 }} className="glass p-4">
             <p className="text-xs font-medium uppercase tracking-wider mb-2" style={{ color: "var(--text-muted)" }}>{item.title}</p>
@@ -144,6 +150,33 @@ export default function EvaluationPage() {
         </div>
       </div>
 
+      {ba && (
+        <div className="glass p-5 mb-6">
+          <div className="flex items-center justify-between mb-4">
+            <div className="flex items-center gap-2">
+              <ShieldCheck size={14} style={{ color: "#10b981" }} />
+              <p className="text-sm font-semibold" style={{ color: "var(--text-primary)" }}>Business-Adherence</p>
+              <span className="text-[11px] ml-1" style={{ color: "var(--text-muted)" }}>Beyond IVR (arXiv 2601.00596)</span>
+            </div>
+            <div className="text-right">
+              <p className="text-2xl font-bold font-mono" style={{ color: ba.business_adherence_score >= 0.95 ? "#10b981" : ba.business_adherence_score >= 0.85 ? "#14b8a6" : "#f59e0b" }}>
+                {formatPct(ba.business_adherence_score * 100)}
+              </p>
+              <p className="text-[11px]" style={{ color: "var(--text-muted)" }}>{ba.grade}</p>
+            </div>
+          </div>
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+            {ba.dimensions.map((dim) => (
+              <div key={dim.dimension} className="p-3 rounded-lg" style={{ background: "var(--surface-3)", border: "1px solid var(--border)" }}>
+                <p className="text-xs font-medium" style={{ color: "var(--text-secondary)" }}>{dim.label}</p>
+                <p className="text-lg font-bold font-mono mt-1" style={{ color: dim.violations === 0 ? "#10b981" : "#f59e0b" }}>{formatPct(dim.adherence_rate * 100)}</p>
+                <p className="text-[11px] mt-0.5" style={{ color: "var(--text-muted)" }}>{dim.violations}/{dim.opportunities} violations</p>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
       <div className="glass overflow-hidden">
         <div className="px-5 py-4 border-b flex items-center gap-2" style={{ borderColor: "var(--border)" }}>
           <FlaskConical size={14} style={{ color: "#5eead4" }} />
@@ -154,7 +187,7 @@ export default function EvaluationPage() {
           <table className="w-full text-sm">
             <thead>
               <tr className="border-b" style={{ borderColor: "var(--border)" }}>
-                {["Status", "Scenario", "Pass@5", "Policy", "Faithfulness", "Context", "NCD"].map((heading) => (
+                {["Status", "Scenario", "Pass@5", "Policy", "Context Recall", "Context Prec."].map((heading) => (
                   <th key={heading} className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider" style={{ color: "var(--text-muted)" }}>{heading}</th>
                 ))}
               </tr>
@@ -169,9 +202,8 @@ export default function EvaluationPage() {
                   </td>
                   <td className="px-4 py-4 font-mono font-bold" style={{ color: scenario.pass_k >= 0.8 ? "#10b981" : scenario.pass_k >= 0.5 ? "#f59e0b" : "#ef4444" }}>{formatPct(scenario.pass_k * 100)}</td>
                   <td className="px-4 py-4 font-mono" style={{ color: "#10b981" }}>{formatPct(scenario.policy_compliance * 100)}</td>
-                  <td className="px-4 py-4 font-mono" style={{ color: "#5eead4" }}>{formatPct(scenario.ragas_faithfulness * 100)}</td>
-                  <td className="px-4 py-4 font-mono" style={{ color: "#f59e0b" }}>{formatPct(scenario.ragas_context_precision * 100)}</td>
-                  <td className="px-4 py-4 font-mono" style={{ color: scenario.non_collaborative_degradation > 0.5 ? "#ef4444" : "var(--text-secondary)" }}>{scenario.non_collaborative_degradation.toFixed(2)}</td>
+                  <td className="px-4 py-4 font-mono" style={{ color: scenario.ragas_context_recall == null ? "var(--text-muted)" : "#5eead4" }}>{scenario.ragas_context_recall == null ? "—" : formatPct(scenario.ragas_context_recall * 100)}</td>
+                  <td className="px-4 py-4 font-mono" style={{ color: scenario.ragas_context_precision == null ? "var(--text-muted)" : "#f59e0b" }}>{scenario.ragas_context_precision == null ? "—" : formatPct(scenario.ragas_context_precision * 100)}</td>
                 </tr>
               ))}
             </tbody>

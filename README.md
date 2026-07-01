@@ -28,8 +28,13 @@ To create a powerful demo for the hackathon, we built these "Wow Factor" feature
 
 *   **Generative UI (Interactive Chat Widgets):** Instead of just replying with text, the agent dynamically controls the frontend. When you ask about billing, outages, or credits, the agent intercepts the SSE stream and renders **Recharts data visualizations** and **interactive cards** directly into the chat bubble!
 *   **"God-Mode" AI Insights:** On the Admin Dashboard, there is a real-time **God-Mode Insights** engine. It aggregates the last 50 customer interactions from the SQLite database and runs them through a Gemini LLM synthesis prompt to instantly generate a proactive Root Cause Analysis for administrators.
-*   **12-Month Deep Billing Data:** Procedurally generated a full year of synthetic invoices and payments for all demo accounts, bringing the `InvoiceWidget` to life with dense historical data.
+*   **Deterministic Seeded Billing:** A fixed, reproducible billing dataset (per-customer invoices + payments, including the planted CUST-1001 duplicate-charge scenario on `INV-8821`) powers the `InvoiceWidget` and the duplicate-detection demo — the same seed the test suite asserts against, so the demo and the tests never drift.
 *   **Laser-Focused Agent Persona:** Tuned the core AI system prompt to enforce extreme brevity (maximum 2 sentences per reply), making the AI extremely punchy and forcing the Generative UI widgets to shine.
+*   **Proactive Retention / Churn-Save:** When an at-risk customer (high/critical churn) starts a cancellation, the agent computes a policy-bounded retention offer (discount + waived fee) and presents it *before* creating the request — turning a cancellation into a save opportunity, rendered as an interactive offer card.
+*   **Live Warm Handoff:** When a conversation actually goes sideways (anger, collapsing health score, or an explicit "get me a human"), the agent escalates mid-stream with a ready-to-read context card for the human specialist — and stays quiet on routine, resolvable issues.
+*   **Multi-Language Replies:** Every reply is localized into the customer's `preferred_language` (Hindi, Tamil, Telugu, Kannada, Malayalam, Marathi, Bengali, Gujarati…), preserving names, IDs, and amounts — built for real Indian-telecom support.
+*   **Evidence Receipts (verifiable "glass box"):** Every customer-facing claim is bound to the exact tool output that backs it via a tamper-evident HMAC **receipt** (*Tool Receipts*, arXiv 2603.10060). The chat shows a **"✓ Verified · N evidence receipts"** badge that expands to the claim→tool→receipt-hash trail, so a reviewer can prove no fact was hallucinated.
+*   **Action Trust Score + self-revision:** Each free-form reply is scored against the verified evidence (deterministic guards + an LLM chain-of-verification self-check). Low trust triggers a one-shot self-revision and, if still untrustworthy, a safe grounded fallback plus a human escalation — the trust-scoring + revise/escalate pattern shown to cut agent failures **up to 50%** on τ²-bench ([Cleanlab](https://cleanlab.ai/blog/tau-bench/)).
 
 ---
 
@@ -156,6 +161,8 @@ ResolveFlow uses a **three-layer evaluation methodology** (deterministic + RAGAS
 
 Benchmark framing: deterministic ResolveFlow results are compared against published τ-bench-style SOTA (below 50% for realistic tool-use customer-service agents) in [backend/evaluation/benchmark.py](backend/evaluation/benchmark.py).
 
+**Business-Adherence (Beyond IVR, arXiv 2601.00596).** That paper shows even GPT-4/Claude-class agents frequently make policy-violating commitments, miss required escalations, and apply rules inconsistently. ResolveFlow's policy-graph is built to prevent exactly those, so [`backend/evaluation/business_adherence.py`](backend/evaluation/business_adherence.py) scores the run on all three failure modes and reports **100% business-adherence** (0 policy-violating commitments, 0 missed escalations, 0 inconsistent verdicts across passes) — surfaced in `/api/evaluation/results`.
+
 ---
 
 ## Environment variables
@@ -214,8 +221,9 @@ tasks.md        # build checklist
 - Mock backend with simulated telecom data; not production-hardened (no auth, PII handling, or real payment integration).
 - Evaluation is deterministic (no temperature/seed variation yet); the 100% figure is over 13 authored scenarios, not a held-out benchmark.
 - In-session chat state is persisted to SQLite (`chat_session_state`) and rehydrates after a restart; it is keyed per customer rather than per concurrent session.
+- Multi-language replies and the warm handoff context card run in the live chat path; the LLM-backed translation falls back to the original English text when no Gemini key is configured.
 - The seeded world is anchored to May/June 2026 (see `RESOLVEFLOW_NOW`).
 
 ## Future work
 
-Temperature-varied `pass@k`, larger scenario set, real CRM/payment integration, persistent multi-session storage, voice layer, and multi-language support.
+Temperature-varied `pass@k`, larger scenario set, real CRM/payment integration, persistent multi-session storage, voice layer, and per-language deterministic fallbacks (translation currently requires the LLM).

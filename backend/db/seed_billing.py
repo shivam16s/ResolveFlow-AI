@@ -12,44 +12,53 @@ except ImportError:  # pragma: no cover - keeps direct script execution working.
     from seed_customers import seed_customers
 
 
-import datetime
-import random
+PAYMENTS = [
+    ("PAY-1001-A", "CUST-1001", 1199, "2026-05-18T09:10:00", "upi", 1),
+    ("PAY-1001-B", "CUST-1001", 1199, "2026-05-18T09:12:00", "upi", 1),
+    ("PAY-1002", "CUST-1002", 1499, "2026-05-05T13:25:00", "credit_card", 0),
+    ("PAY-1003", "CUST-1003", 1999, "2026-05-07T08:45:00", "netbanking", 0),
+    ("PAY-1004", "CUST-1004", 799, "2026-05-09T20:14:00", "upi", 0),
+    ("PAY-1005", "CUST-1005", 999, "2026-05-11T18:40:00", "auto_debit", 0),
+    ("PAY-1006", "CUST-1006", 1199, "2026-05-02T10:05:00", "credit_card", 0),
+    ("PAY-1007", "CUST-1007", 1499, "2026-05-15T16:30:00", "upi", 0),
+    ("PAY-1008", "CUST-1008", 1999, "2026-05-06T11:11:00", "auto_debit", 0),
+    ("PAY-1009", "CUST-1009", 1199, "2026-05-08T19:52:00", "upi", 0),
+    ("PAY-1010", "CUST-1010", 799, "2026-05-12T07:36:00", "wallet", 0),
+    ("PAY-1011", "CUST-1011", 999, "2026-05-10T15:18:00", "netbanking", 0),
+    ("PAY-1012", "CUST-1012", 1499, "2026-05-14T09:27:00", "credit_card", 0),
+    ("PAY-1013", "CUST-1013", 1999, "2026-05-16T21:04:00", "auto_debit", 0),
+    ("PAY-1014", "CUST-1014", 799, "2026-04-29T17:43:00", "upi", 0),
+    ("PAY-1015", "CUST-1015", 1199, "2026-05-03T12:20:00", "wallet", 0),
+    ("PAY-1016", "CUST-1016", 999, "2026-05-13T10:40:00", "upi", 0),
+    ("PAY-1017", "CUST-1017", 1499, "2026-05-17T22:15:00", "credit_card", 0),
+    ("PAY-1018", "CUST-1018", 799, "2026-05-04T06:55:00", "netbanking", 0),
+    ("PAY-1019", "CUST-1019", 1999, "2026-05-19T14:02:00", "auto_debit", 0),
+    ("PAY-1020", "CUST-1020", 1199, "2026-05-18T09:50:00", "upi", 0),
+]
 
-PAYMENTS = []
-INVOICES = []
 
-customer_amounts = {
-    "CUST-1001": 1199, "CUST-1002": 1499, "CUST-1003": 1999, "CUST-1004": 799,
-    "CUST-1005": 999,  "CUST-1006": 1199, "CUST-1007": 1499, "CUST-1008": 1999,
-    "CUST-1009": 1199, "CUST-1010": 799,  "CUST-1011": 999,  "CUST-1012": 1499,
-    "CUST-1013": 1999, "CUST-1014": 799,  "CUST-1015": 1199, "CUST-1016": 999,
-    "CUST-1017": 1499, "CUST-1018": 799,  "CUST-1019": 1999, "CUST-1020": 1199,
-}
-methods = ["upi", "credit_card", "netbanking", "wallet", "auto_debit"]
-
-# Generate 12 months of historical invoices (June 2025 - May 2026)
-for cust_id, amount in customer_amounts.items():
-    for month_offset in range(12):
-        # 11 = May 2026, 0 = June 2025
-        year = 2025 if month_offset < 7 else 2026
-        month = (month_offset + 5) % 12 + 1 # June (6) to May (5)
-        
-        day = random.randint(1, 15)
-        date_str = f"{year}-{month:02d}-{day:02d}"
-        
-        inv_id = f"INV-{cust_id.split('-')[1]}-{year}-{month:02d}"
-        pay_id = f"PAY-{cust_id.split('-')[1]}-{year}-{month:02d}"
-        method = random.choice(methods)
-        
-        # CUST-1001 gets a duplicate payment in May 2026 to preserve the test scenario
-        if cust_id == "CUST-1001" and month == 5 and year == 2026:
-            INVOICES.append((inv_id, cust_id, amount, date_str, "disputed", f"{pay_id}-A"))
-            PAYMENTS.append((f"{pay_id}-A", cust_id, amount, f"{date_str}T09:10:00", method, 1))
-            PAYMENTS.append((f"{pay_id}-B", cust_id, amount, f"{date_str}T09:12:00", method, 1))
-        else:
-            INVOICES.append((inv_id, cust_id, amount, date_str, "paid", pay_id))
-            PAYMENTS.append((pay_id, cust_id, amount, f"{date_str}T10:00:00", method, 0))
-
+INVOICES = [
+    ("INV-8821", "CUST-1001", 1199, "2026-05-18", "disputed", "PAY-1001-A"),
+    ("INV-1002", "CUST-1002", 1499, "2026-05-05", "paid", "PAY-1002"),
+    ("INV-1003", "CUST-1003", 1999, "2026-05-07", "paid", "PAY-1003"),
+    ("INV-1004", "CUST-1004", 799, "2026-05-09", "paid", "PAY-1004"),
+    ("INV-1005", "CUST-1005", 999, "2026-05-11", "paid", "PAY-1005"),
+    ("INV-1006", "CUST-1006", 1199, "2026-05-02", "paid", "PAY-1006"),
+    ("INV-1007", "CUST-1007", 1499, "2026-05-15", "paid", "PAY-1007"),
+    ("INV-1008", "CUST-1008", 1999, "2026-05-06", "paid", "PAY-1008"),
+    ("INV-1009", "CUST-1009", 1199, "2026-05-08", "paid", "PAY-1009"),
+    ("INV-1010", "CUST-1010", 799, "2026-05-12", "paid", "PAY-1010"),
+    ("INV-1011", "CUST-1011", 999, "2026-05-10", "paid", "PAY-1011"),
+    ("INV-1012", "CUST-1012", 1499, "2026-05-14", "paid", "PAY-1012"),
+    ("INV-1013", "CUST-1013", 1999, "2026-05-16", "paid", "PAY-1013"),
+    ("INV-1014", "CUST-1014", 799, "2026-04-29", "pending", "PAY-1014"),
+    ("INV-1015", "CUST-1015", 1199, "2026-05-03", "paid", "PAY-1015"),
+    ("INV-1016", "CUST-1016", 999, "2026-05-13", "paid", "PAY-1016"),
+    ("INV-1017", "CUST-1017", 1499, "2026-05-17", "paid", "PAY-1017"),
+    ("INV-1018", "CUST-1018", 799, "2026-05-04", "paid", "PAY-1018"),
+    ("INV-1019", "CUST-1019", 1999, "2026-05-19", "paid", "PAY-1019"),
+    ("INV-1020", "CUST-1020", 1199, "2026-05-18", "paid", "PAY-1020"),
+]
 
 
 def seed_payments(connection: sqlite3.Connection) -> None:
@@ -108,8 +117,7 @@ def seed_billing(db_path: Path = DEFAULT_DB_PATH) -> None:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(
-        description="Seed ResolveFlow invoices and payments.")
+    parser = argparse.ArgumentParser(description="Seed ResolveFlow invoices and payments.")
     parser.add_argument(
         "--db-path",
         type=Path,
@@ -119,8 +127,7 @@ def main() -> None:
     args = parser.parse_args()
 
     seed_billing(args.db_path)
-    print(
-        f"Seeded {len(INVOICES)} invoices and {len(PAYMENTS)} payments at {args.db_path}")
+    print(f"Seeded {len(INVOICES)} invoices and {len(PAYMENTS)} payments at {args.db_path}")
 
 
 if __name__ == "__main__":

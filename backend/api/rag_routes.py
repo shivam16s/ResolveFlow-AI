@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 import sqlite3
 from typing import Any
 
@@ -41,11 +42,76 @@ def memory_search(payload: MemorySearchRequest, request: Request) -> JSONRespons
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 
+    payload_results = [r.to_dict() for r in results]
+    if not payload_results:
+        # The vector/graph stores are only populated after the (optional) demo
+        # indexing step. So the knowledge-base search is never empty out of the
+        # box, fall back to a keyword search over the seeded memory_store table.
+        payload_results = _memory_store_fallback(
+            db_path=request.app.state.db_path,
+            customer_id=payload.customer_id,
+            query=payload.query,
+            top_k=payload.top_k,
+            memory_type=payload.memory_type,
+        )
+
     return JSONResponse({
-        "results": [r.to_dict() for r in results],
+        "results": payload_results,
         "query": payload.query,
         "customer_id": payload.customer_id
     })
+
+
+def _memory_store_fallback(
+    *, db_path: Any, customer_id: str, query: str, top_k: int, memory_type: str | None
+) -> list[dict[str, Any]]:
+    terms = [t for t in re.findall(r"[a-z0-9]+", query.lower()) if len(t) >= 3]
+    sql = (
+        "SELECT memory_id, memory_type, content, entity_tags, updated_at "
+        "FROM memory_store WHERE customer_id = ?"
+    )
+    params: list[Any] = [customer_id]
+    if memory_type:
+        sql += " AND memory_type = ?"
+        params.append(memory_type)
+    try:
+        with sqlite3.connect(db_path) as conn:
+            conn.row_factory = sqlite3.Row
+            rows = conn.execute(
+                sql + " ORDER BY datetime(updated_at) DESC", params).fetchall()
+    except sqlite3.Error:
+        return []
+
+    scored = []
+    for row in rows:
+        content = (row["content"] or "").lower()
+        overlap = sum(1 for term in terms if term in content) if terms else 0
+        scored.append((overlap, row))
+    # Keyword matches first; fall back to most-recent memories when nothing matches
+    # so the panel still shows the customer's known history.
+    scored.sort(key=lambda item: (-item[0], -(item[1]["updated_at"] or "")))
+
+    results = []
+    for rank, (overlap, row) in enumerate(scored[:top_k], start=1):
+        relevance = round(overlap / len(terms), 4) if terms else 0.0
+        results.append({
+            "memory_id": row["memory_id"],
+            "document": row["content"],
+            "metadata": {
+                "memory_type": row["memory_type"],
+                "entity_tags": _loads_json(row["entity_tags"]),
+                "updated_at": row["updated_at"],
+            },
+            "fused_score": round(relevance * 0.5 + 0.1, 6),
+            "sources": ["memory_store"],
+            "vector_rank": rank,
+            "graph_rank": None,
+            "vector_score": relevance,
+            "graph_score": None,
+            "supporting_nodes": [],
+            "query_nodes": terms[:5],
+        })
+    return results
 
 
 @rag_router.post("/policy/retrieve")

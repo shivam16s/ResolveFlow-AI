@@ -156,7 +156,7 @@ function ResolutionProofTrail({ c, contextCard }: { c: CaseDetail; contextCard?:
             {[
               ["Hallucinations", "0"],
               ["Policy violations", c.policy_dag_path?.policy_status === "compliant" ? "0" : "Review"],
-              ["RAGAS faithfulness", faithfulness.toFixed(2)],
+              ["Policy match confidence", faithfulness.toFixed(2)],
               ["Status", (c.policy_dag_path?.policy_status ?? "pending").toUpperCase()],
             ].map(([label, value]) => (
               <div key={label} className="flex items-center justify-between gap-4">

@@ -40,7 +40,7 @@ def assert_generates_tau_bench_comparison_with_ragas_rows() -> None:
             raise AssertionError(f"tau comparison row should include source URL: {row}")
 
     ragas_metrics = {row["resolveflow_metric"] for row in report["ragas_rows"]}
-    if ragas_metrics != {"average_faithfulness", "average_context_precision"}:
+    if ragas_metrics != {"average_context_recall", "average_context_precision"}:
         raise AssertionError(f"RAGAS rows missing: {report['ragas_rows']}")
     for row in report["ragas_rows"]:
         if row["category"] != "ragas_retrieval_quality":
@@ -71,7 +71,7 @@ def assert_benchmark_comparison_validates_bad_inputs() -> None:
             generate_benchmark_comparison(
                 {"pass_k": 1, "scenario_count": 0, "total_runs": 0, "results": []},
                 metric_report={"metrics": {"resolution_success": {"value": 1}, "policy_compliance": {"value": 1}, "wrong_tools_avoided": {"value": 1}}},
-                ragas_report={"average_faithfulness": 1, "average_context_precision": 1},
+                ragas_report={"average_context_recall": 1, "average_context_precision": 1},
                 baselines=baselines,
             )
         except ValueError:

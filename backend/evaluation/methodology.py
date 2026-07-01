@@ -102,7 +102,7 @@ def build_three_layer_evaluation(
             {
                 "name": "ragas",
                 "source": "evaluate_policy_retrievals_with_ragas",
-                "purpose": "Score faithfulness and context precision on every policy retrieval evidence set.",
+                "purpose": "Score context recall and context precision on every policy retrieval evidence set.",
                 "output_key": "ragas_report",
             },
             {

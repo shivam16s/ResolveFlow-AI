@@ -24,15 +24,15 @@ def assert_scores_all_policy_retrievals_from_real_evaluation() -> None:
     report = evaluate_policy_retrievals_with_ragas(evaluation)
     if report["retrieval_count"] != retrieval_count:
         raise AssertionError(f"RAGAS report should score every retrieval: {report}")
-    if not 0 <= report["average_faithfulness"] <= 1:
-        raise AssertionError(f"faithfulness out of range: {report}")
+    if not 0 <= report["average_context_recall"] <= 1:
+        raise AssertionError(f"context_recall out of range: {report}")
     if not 0 <= report["average_context_precision"] <= 1:
         raise AssertionError(f"context precision out of range: {report}")
     for score in report["scores"]:
         if score["context_count"] <= 0:
             raise AssertionError(f"retrieval should include contexts: {score}")
-        if not 0 <= score["faithfulness"] <= 1:
-            raise AssertionError(f"score faithfulness out of range: {score}")
+        if not 0 <= score["context_recall"] <= 1:
+            raise AssertionError(f"score context_recall out of range: {score}")
         if not 0 <= score["context_precision"] <= 1:
             raise AssertionError(f"score context precision out of range: {score}")
 
@@ -50,8 +50,8 @@ def assert_duplicate_charge_policy_has_grounded_evidence() -> None:
     if len(duplicate_scores) != 1:
         raise AssertionError(f"expected one duplicate policy score: {duplicate_scores}")
     score = duplicate_scores[0]
-    if score["faithfulness"] <= 0:
-        raise AssertionError(f"duplicate charge faithfulness should find supported terms: {score}")
+    if score["context_recall"] <= 0:
+        raise AssertionError(f"duplicate charge context_recall should find supported terms: {score}")
     if score["context_precision"] <= 0:
         raise AssertionError(f"duplicate charge context precision should be positive: {score}")
     if "duplicate" not in score["supported_terms"]:

@@ -65,10 +65,29 @@ class IntentClassifier:
             raise ValueError("message must not be empty")
 
         if self.llm_client is not None:
-            raw_output = self.llm_client(self.build_prompt(normalized))
+            raw_output = self._invoke_llm(self.build_prompt(normalized))
             return self._classification_from_llm_output(raw_output)
 
         return self._classification_from_rules(normalized)
+
+    def _invoke_llm(self, prompt: str) -> str:
+        """Call the LLM forcing structured JSON output when the client supports it.
+
+        The classifier prompt asks for a strict JSON object. Clients exposing a
+        ``generate`` method (e.g. ``LLMClient``) are called with
+        ``response_mime_type="application/json"`` and a generous output budget so
+        thinking models (gemini-2.5-flash) do not truncate mid-object and break
+        ``json.loads``. Plain callables keep the legacy ``client(prompt)`` path.
+        """
+        generate = getattr(self.llm_client, "generate", None)
+        if callable(generate):
+            return generate(
+                prompt,
+                response_mime_type="application/json",
+                temperature=0.0,
+                max_output_tokens=2048,
+            )
+        return self.llm_client(prompt)
 
     def classify_json(self, message: str) -> str:
         return self.classify(message).to_json()

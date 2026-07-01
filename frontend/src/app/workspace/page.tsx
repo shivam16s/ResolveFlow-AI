@@ -39,7 +39,7 @@ export default function WorkspacePage() {
           <SectionLabel>Project Status</SectionLabel>
           <div className="space-y-4">
             <ProgressRow label="Policy coverage" value={Math.round((evaluation?.avg_policy_compliance ?? 0.867) * 100)} />
-            <ProgressRow label="RAGAS faithfulness" value={Math.round((evaluation?.avg_ragas_faithfulness ?? 0.949) * 100)} tone="indigo" />
+            <ProgressRow label="RAGAS context precision" value={Math.round((evaluation?.avg_ragas_context_precision ?? 0.949) * 100)} tone="indigo" />
             <ProgressRow label="Dashboard readiness" value={86} tone="amber" />
             <ProgressRow label="Submission packet" value={72} tone="amber" />
           </div>

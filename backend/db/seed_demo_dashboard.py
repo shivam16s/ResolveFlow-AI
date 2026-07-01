@@ -49,6 +49,7 @@ def seed_demo_dashboard(db_path: Path = DEFAULT_DB_PATH) -> dict[str, Any]:
         connection.execute("PRAGMA foreign_keys = ON")
         connection.execute("PRAGMA journal_mode = MEMORY")
         _seed_demo_customer_risk(connection)
+        _seed_demo_billing_history(connection)
         _seed_demo_conversations(connection, now)
         _seed_demo_credits(connection, now)
         _seed_demo_tickets(connection, now)
@@ -80,6 +81,51 @@ def _seed_demo_customer_risk(connection: sqlite3.Connection) -> None:
                 ("medium" if index % 2 == 0 else "low",
                  0.24 + (index % 5) * 0.06, customer_id),
             )
+
+
+def _seed_demo_billing_history(connection: sqlite3.Connection) -> None:
+    """Add ~10 months of prior invoices/payments per customer for a rich chart.
+
+    The canonical May-2026 invoices seeded by ``seed_billing`` (including
+    CUST-1001's ``INV-8821`` duplicate) are left untouched. Duplicate detection
+    matches on the exact ``2026-05-18`` date, so this older history (other dates)
+    can never collide with the duplicate-charge scenario. Demo-only: the test
+    fixtures build their DBs from ``seed_billing`` directly and never see this.
+    """
+    base_amounts = {
+        row[0]: float(row[1])
+        for row in connection.execute(
+            "SELECT customer_id, amount FROM invoices"
+        ).fetchall()
+    }
+    months = [
+        (2025, 7), (2025, 8), (2025, 9), (2025, 10), (2025, 11), (2025, 12),
+        (2026, 1), (2026, 2), (2026, 3), (2026, 4),
+    ]
+    methods = ["upi", "credit_card", "netbanking", "auto_debit", "wallet"]
+    invoices = []
+    payments = []
+    for index in range(1, 21):
+        number = 1000 + index
+        customer_id = f"CUST-{number}"
+        base = base_amounts.get(customer_id, 1199.0)
+        for month_index, (year, month) in enumerate(months):
+            # Deterministic +-8% variation so the chart reads like real usage.
+            amount = round(base * (1 + ((month_index % 5) - 2) * 0.04))
+            date_str = f"{year}-{month:02d}-09"
+            invoice_id = f"INV-{number}-H{year}{month:02d}"
+            payment_id = f"PAY-{number}-H{year}{month:02d}"
+            method = methods[(index + month_index) % len(methods)]
+            invoices.append((invoice_id, customer_id, amount, date_str, "paid", payment_id))
+            payments.append((payment_id, customer_id, amount, f"{date_str}T10:00:00", method, 0))
+    connection.executemany(
+        "INSERT OR IGNORE INTO payments (payment_id, customer_id, amount, date, method, duplicate_flag) VALUES (?, ?, ?, ?, ?, ?)",
+        payments,
+    )
+    connection.executemany(
+        "INSERT OR IGNORE INTO invoices (invoice_id, customer_id, amount, date, status, payment_id) VALUES (?, ?, ?, ?, ?, ?)",
+        invoices,
+    )
 
 
 def _seed_demo_conversations(connection: sqlite3.Connection, now: datetime) -> None:

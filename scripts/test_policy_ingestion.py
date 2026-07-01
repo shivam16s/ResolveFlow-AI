@@ -50,9 +50,15 @@ def test_chunks_policy_documents_to_token_windows_with_overlap() -> None:
     chunks = chunk_policy_document(document, max_tokens=10, overlap_tokens=3)
     assert [chunk.token_count for chunk in chunks] == [10, 10, 10, 4]
     assert all(chunk.chunk_count == 4 for chunk in chunks)
-    assert chunks[0].text.split()[-3:] == chunks[1].text.split()[:3]
-    assert chunks[1].text.split()[-3:] == chunks[2].text.split()[:3]
-    assert chunks[2].text.split()[-3:] == chunks[3].text.split()[:3]
+
+    # Each chunk is prefixed with a "# {title}" header for retrieval context, so
+    # the token-overlap invariant is checked on the content body (after the header).
+    def _body_tokens(chunk):
+        return chunk.text.split("\n", 1)[-1].split()
+
+    assert _body_tokens(chunks[0])[-3:] == _body_tokens(chunks[1])[:3]
+    assert _body_tokens(chunks[1])[-3:] == _body_tokens(chunks[2])[:3]
+    assert _body_tokens(chunks[2])[-3:] == _body_tokens(chunks[3])[:3]
     assert chunks[0].chunk_id != chunks[1].chunk_id
 
     real_chunks = [

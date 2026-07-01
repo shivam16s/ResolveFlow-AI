@@ -8,6 +8,12 @@ from .scenarios import (
     validate_evaluation_scenarios,
 )
 from .runner import EvaluationCaseResult, EvaluationRunResult, run_evaluation
+from .business_adherence import (
+    BusinessAdherenceReport,
+    DimensionScore,
+    compute_business_adherence,
+    run_business_adherence_evaluation,
+)
 from .reporting import EvaluationMetric, EvaluationMetricReport, generate_metric_report
 from .ragas import RAGASEvaluationReport, RAGASPolicyRetrievalScore, evaluate_policy_retrievals_with_ragas
 from .methodology import (
@@ -30,6 +36,10 @@ __all__ = [
     "DEFAULT_TAU_BENCH_BASELINES",
     "BenchmarkComparisonReport",
     "BenchmarkComparisonRow",
+    "BusinessAdherenceReport",
+    "DimensionScore",
+    "compute_business_adherence",
+    "run_business_adherence_evaluation",
     "EvaluationCaseResult",
     "EvaluationMetric",
     "EvaluationMetricReport",

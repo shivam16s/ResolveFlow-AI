@@ -166,10 +166,27 @@ export interface ScenarioResult {
   pass_k: number;
   avg_turns: number;
   policy_compliance: number;
-  ragas_faithfulness: number;
-  ragas_context_precision: number;
-  non_collaborative_degradation: number;
+  ragas_context_recall: number | null;
+  ragas_context_precision: number | null;
   status: "pass" | "fail" | "partial";
+}
+
+export interface BusinessAdherenceDimension {
+  dimension: string;
+  label: string;
+  opportunities: number;
+  violations: number;
+  adherence_rate: number;
+  offending_scenarios: string[];
+}
+
+export interface BusinessAdherenceReport {
+  business_adherence_score: number;
+  grade: string;
+  pass_k: number;
+  scenario_count: number;
+  dimensions: BusinessAdherenceDimension[];
+  summary: string;
 }
 
 export interface EvaluationReport {
@@ -179,7 +196,9 @@ export interface EvaluationReport {
   pass_rate: number;
   avg_pass_k: number;
   avg_policy_compliance: number;
-  avg_ragas_faithfulness: number;
+  avg_ragas_context_recall: number;
+  avg_ragas_context_precision?: number;
+  business_adherence?: BusinessAdherenceReport | null;
   scenarios: ScenarioResult[];
 }
 

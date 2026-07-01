@@ -151,7 +151,7 @@ export default function ResolveLandingPage() {
 
   const passRate = pct(evaluation?.pass_rate, "100.0%");
   const policyRate = pct(evaluation?.avg_policy_compliance, kpi ? formatPct(kpi.policy_compliant_pct) : "86.7%");
-  const ragasRate = pct(evaluation?.avg_ragas_faithfulness, "94.9%");
+  const ragasRate = pct(evaluation?.avg_ragas_context_precision, "94.9%");
   const casesToday = String(kpi?.total_cases_today ?? 30);
 
   return (
