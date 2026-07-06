@@ -4,6 +4,11 @@ import argparse
 import sqlite3
 from pathlib import Path
 
+try:
+    from .seed_policies import seed_policy_sql_table
+except ImportError:  # pragma: no cover - keeps direct script execution working.
+    from seed_policies import seed_policy_sql_table
+
 
 SCHEMA_PATH = Path(__file__).with_name("schema.sql")
 DEFAULT_DB_PATH = Path(__file__).resolve(
@@ -16,8 +21,9 @@ def initialize_database(db_path: Path = DEFAULT_DB_PATH) -> None:
 
     with sqlite3.connect(db_path) as connection:
         connection.execute("PRAGMA foreign_keys = ON")
-        connection.execute("PRAGMA journal_mode = MEMORY")
+        connection.execute("PRAGMA journal_mode = WAL")
         connection.executescript(schema_sql)
+        seed_policy_sql_table(connection)
 
 
 def main() -> None:

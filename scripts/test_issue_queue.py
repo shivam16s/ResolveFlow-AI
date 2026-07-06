@@ -63,6 +63,17 @@ def test_issue_queue_json_shape() -> None:
     ]
 
 
+def test_issue_queue_falls_back_for_unknown_intents() -> None:
+    unknown = build_issue_queue(["billing_followup_from_llm", "", "billing_followup_from_llm"])
+    assert [issue.intent for issue in unknown] == ["general_query"]
+    assert unknown[0].required_slots == ["customer_id"]
+
+    mixed = build_issue_queue(["service_outage", "brand_new_intent"])
+    assert [issue.intent for issue in mixed] == ["service_outage", "general_query"]
+    assert mixed[0].required_slots == ["customer_id", "location"]
+    assert mixed[1].required_slots == ["customer_id"]
+
+
 def test_issue_queue_tracks_slot_progress() -> None:
     queue = build_issue_queue(["duplicate_charge", "service_outage"])
     slots = {"customer_id": "CUST-1001", "invoice_id": "INV-8821", "location": ""}
@@ -90,6 +101,18 @@ def test_issue_queue_uses_schema_missing_slot_detection() -> None:
     assert progress[0].filled_slots == {"customer_id": "CUST-1001", "reason": "duplicate payment"}
     assert progress[0].missing_slots == ["amount"]
     assert queue.next_missing_slot({"customer_id": "CUST-1001", "amount": "", "reason": "duplicate payment"}) == (
+        "refund_request",
+        "amount",
+    )
+
+
+def test_issue_queue_slot_presence_matches_slot_schema_for_empty_containers() -> None:
+    queue = build_issue_queue(["refund_request"])
+    progress = queue.slot_progress({"customer_id": "CUST-1001", "amount": [], "reason": {}})
+
+    assert progress[0].filled_slots == {"customer_id": "CUST-1001"}
+    assert progress[0].missing_slots == ["amount", "reason"]
+    assert queue.next_missing_slot({"customer_id": "CUST-1001", "amount": [], "reason": {}}) == (
         "refund_request",
         "amount",
     )
@@ -155,8 +178,10 @@ def main() -> None:
     test_build_issue_queue_orders_demo_intents()
     test_build_issue_queue_keeps_distinct_billing_issue()
     test_issue_queue_json_shape()
+    test_issue_queue_falls_back_for_unknown_intents()
     test_issue_queue_tracks_slot_progress()
     test_issue_queue_uses_schema_missing_slot_detection()
+    test_issue_queue_slot_presence_matches_slot_schema_for_empty_containers()
     test_issue_queue_next_missing_slot_uses_prioritized_slot()
     test_issue_queue_generates_targeted_question_for_current_missing_slot()
     print("PASS issue queue priority tests")

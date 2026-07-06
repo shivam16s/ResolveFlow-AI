@@ -11,6 +11,7 @@ from backend.agent import (  # noqa: E402
     IntentClassifier,
     Issue,
     IssueResolution,
+    IssueResolverError,
     SequentialResolutionLoop,
     build_issue_queue,
 )
@@ -91,24 +92,30 @@ def test_resolution_loop_can_stop_on_escalation() -> None:
     assert run.completed is False
 
 
-def test_resolution_loop_turns_resolver_exception_into_escalation() -> None:
+def test_resolution_loop_raises_typed_error_for_resolver_exception() -> None:
     queue = build_issue_queue(["service_outage"])
 
     def resolver(_: Issue) -> IssueResolution:
         raise RuntimeError("diagnostic backend unavailable")
 
-    run = SequentialResolutionLoop(resolver).run(queue)
+    try:
+        SequentialResolutionLoop(resolver).run(queue)
+    except IssueResolverError as exc:
+        assert exc.intent == "service_outage"
+        assert isinstance(exc.__cause__, RuntimeError)
+        assert "diagnostic backend unavailable" not in str(exc)
+    else:
+        raise AssertionError("resolver bugs should raise IssueResolverError")
 
-    assert queue[0].status == "escalated"
-    assert "diagnostic backend unavailable" in (queue[0].resolution or "")
-    assert run.completed is True
+    assert queue[0].status == "in_progress"
+    assert queue[0].resolution is None
 
 
 def main() -> None:
     test_resolution_loop_processes_one_issue_at_a_time_in_priority_order()
     test_resolution_loop_marks_escalated_issue_and_continues()
     test_resolution_loop_can_stop_on_escalation()
-    test_resolution_loop_turns_resolver_exception_into_escalation()
+    test_resolution_loop_raises_typed_error_for_resolver_exception()
     print("PASS sequential resolution loop tests")
 
 

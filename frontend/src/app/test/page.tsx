@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   AlertTriangle,
   ArrowUpRight,
@@ -11,11 +11,13 @@ import {
   Database,
   GitBranch,
   Loader2,
+  Mic,
   MessageSquare,
   ReceiptText,
   Send,
   ShieldCheck,
   User,
+  Volume2,
   WifiOff,
   Wrench,
   X,
@@ -29,6 +31,7 @@ type CustomerProfile = {
   risk: "HIGH" | "MEDIUM" | "LOW";
   hint: string;
   tone: "red" | "amber" | "green";
+  preferredLanguage: string;
 };
 
 type HandoffInfo = {
@@ -44,14 +47,49 @@ type VerifiedClaim = { claim: string; tool: string; receipt_id?: string | null }
 type TrustInfo = { score?: number; action?: string; issues?: string[]; threshold?: number };
 
 type ChatMessage = {
-  role: "customer" | "agent";
+  role: "customer" | "agent" | "human_agent";
   content: string;
   timestamp: string;
+  agentName?: string;
   toolResults?: Record<string, unknown>[];
   handoff?: HandoffInfo | null;
   verifiedClaims?: VerifiedClaim[];
   trust?: TrustInfo | null;
+  language?: string;
 };
+
+type SpeechRecognitionResultLike = {
+  readonly length: number;
+  item(index: number): { transcript: string };
+  [index: number]: { transcript: string };
+};
+
+type SpeechRecognitionEventLike = {
+  readonly results: {
+    readonly length: number;
+    item(index: number): SpeechRecognitionResultLike;
+    [index: number]: SpeechRecognitionResultLike;
+  };
+};
+
+type SpeechRecognitionLike = {
+  lang: string;
+  interimResults: boolean;
+  maxAlternatives: number;
+  onresult: ((event: SpeechRecognitionEventLike) => void) | null;
+  onend: (() => void) | null;
+  onerror: (() => void) | null;
+  start: () => void;
+};
+
+type SpeechRecognitionConstructor = new () => SpeechRecognitionLike;
+
+declare global {
+  interface Window {
+    SpeechRecognition?: SpeechRecognitionConstructor;
+    webkitSpeechRecognition?: SpeechRecognitionConstructor;
+  }
+}
 
 type PipelineStepId = "intent" | "memory" | "policy" | "tools" | "dag" | "response";
 type PipelineStatus = "idle" | "running" | "done";
@@ -61,6 +99,8 @@ type PipelineStep = {
   label: string;
   status: PipelineStatus;
   result: Record<string, unknown>;
+  startedAt?: number;
+  durationMs?: number;
 };
 
 const DEMO_CUSTOMERS: CustomerProfile[] = [
@@ -71,6 +111,7 @@ const DEMO_CUSTOMERS: CustomerProfile[] = [
     risk: "HIGH",
     hint: "Duplicate charge + outage history",
     tone: "red",
+    preferredLanguage: "en-IN",
   },
   {
     customer_id: "CUST-1002",
@@ -79,6 +120,7 @@ const DEMO_CUSTOMERS: CustomerProfile[] = [
     risk: "MEDIUM",
     hint: "Plan change + refund pending",
     tone: "amber",
+    preferredLanguage: "en-IN",
   },
   {
     customer_id: "CUST-1009",
@@ -87,6 +129,7 @@ const DEMO_CUSTOMERS: CustomerProfile[] = [
     risk: "LOW",
     hint: "Router diagnostic history",
     tone: "green",
+    preferredLanguage: "en-IN",
   },
 ];
 
@@ -127,6 +170,9 @@ const PIPELINE_TEMPLATE: PipelineStep[] = [
   { id: "response", label: "Generating response", status: "idle", result: {} },
 ];
 
+const STREAM_WATCHDOG_MS = 30000;
+const TAB_SESSION_STORAGE_KEY = "resolveflow.chat_session_id";
+
 const stepIcons = {
   intent: Brain,
   memory: Database,
@@ -156,6 +202,23 @@ function resetSteps(): PipelineStep[] {
   return PIPELINE_TEMPLATE.map((step) => ({ ...step, status: "idle", result: {} }));
 }
 
+function createSessionId() {
+  const randomPart =
+    typeof crypto !== "undefined" && "randomUUID" in crypto
+      ? crypto.randomUUID()
+      : `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+  return `tab-${randomPart}`;
+}
+
+function getOrCreateTabSessionId() {
+  if (typeof window === "undefined") return createSessionId();
+  const stored = window.sessionStorage.getItem(TAB_SESSION_STORAGE_KEY);
+  if (stored) return stored;
+  const created = createSessionId();
+  window.sessionStorage.setItem(TAB_SESSION_STORAGE_KEY, created);
+  return created;
+}
+
 type LiveAgentConsoleProps = {
   title?: string;
   subtitle?: string;
@@ -168,28 +231,215 @@ export function LiveAgentConsole({
   const [selected, setSelected] = useState(DEMO_CUSTOMERS[0]);
   const [messages, setMessages] = useState<ChatMessage[]>(() => initialMessages(DEMO_CUSTOMERS[0]));
   const [input, setInput] = useState("");
+  const [isListening, setIsListening] = useState(false);
+  const [ttsEnabled, setTtsEnabled] = useState(false);
+  const [voiceNotice, setVoiceNotice] = useState<string | null>(null);
   const [steps, setSteps] = useState<PipelineStep[]>(resetSteps);
   const [status, setStatus] = useState<"READY" | "THINKING" | "RESOLVED">("READY");
+  const [resetting, setResetting] = useState(false);
   const [health, setHealth] = useState(72);
   const [relationship, setRelationship] = useState({ start: 29, end: 29 });
   const streamRef = useRef<EventSource | null>(null);
+  const sessionIdRef = useRef("");
+  const humanReplyKeysRef = useRef<Set<string>>(new Set());
+  const streamWatchdogRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const messagesEndRef = useRef<HTMLDivElement | null>(null);
 
   const emptyConversation = messages.length === 1 && messages[0].role === "agent";
   const completedSteps = steps.filter((step) => step.status === "done").length;
 
+  // Without this, a newly sent message (or the agent's reply) can render below
+  // the visible viewport with no indication anything happened -- every real
+  // chat UI auto-scrolls to the newest message.
   useEffect(() => {
-    return () => streamRef.current?.close();
+    messagesEndRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
+  }, [messages, status]);
+
+  function clearStreamWatchdog() {
+    if (streamWatchdogRef.current === null) return;
+    clearTimeout(streamWatchdogRef.current);
+    streamWatchdogRef.current = null;
+  }
+
+  function closeStream(stream: EventSource) {
+    clearStreamWatchdog();
+    stream.close();
+    if (streamRef.current === stream) streamRef.current = null;
+  }
+
+  function markStreamStopped(stream: EventSource, content: string, stepError: string) {
+    setStatus("READY");
+    setSteps((items) =>
+      items.map((step) =>
+        step.status === "running"
+          ? { ...step, status: "idle", result: { error: stepError } }
+          : step
+      )
+    );
+    setMessages((items) => [
+      ...items,
+      {
+        role: "agent",
+        content,
+        timestamp: new Date().toISOString(),
+      },
+    ]);
+    closeStream(stream);
+  }
+
+  function armStreamWatchdog(stream: EventSource) {
+    clearStreamWatchdog();
+    streamWatchdogRef.current = setTimeout(() => {
+      if (streamRef.current !== stream) return;
+      markStreamStopped(
+        stream,
+        "The live chat stream stopped responding, so I closed it before the UI could get stuck. Please try sending the message again.",
+        "Stream timed out"
+      );
+    }, STREAM_WATCHDOG_MS);
+  }
+
+  const speakReply = useCallback((text: string) => {
+    if (!ttsEnabled || typeof window === "undefined" || !("speechSynthesis" in window)) return;
+    const utterance = new SpeechSynthesisUtterance(text);
+    utterance.lang = selected.preferredLanguage;
+    window.speechSynthesis.cancel();
+    window.speechSynthesis.speak(utterance);
+  }, [selected.preferredLanguage, ttsEnabled]);
+
+  useEffect(() => {
+    sessionIdRef.current = getOrCreateTabSessionId();
+    return () => {
+      clearStreamWatchdog();
+      streamRef.current?.close();
+    };
   }, []);
 
+  useEffect(() => {
+    let cancelled = false;
+    async function pollHumanReplies() {
+      const activeSessionId = sessionIdRef.current || getOrCreateTabSessionId();
+      sessionIdRef.current = activeSessionId;
+      try {
+        const params = new URLSearchParams({
+          customer_id: selected.customer_id,
+          session_id: activeSessionId,
+        });
+        const response = await fetch(`/api/chat/session/messages?${params.toString()}`);
+        if (!response.ok || cancelled) return;
+        const payload = await response.json() as { messages?: Array<Record<string, unknown>> };
+        const externalMessages = (payload.messages ?? []).filter(
+          (item) => item.role === "human_agent" || item.proactive === true
+        );
+        const additions: ChatMessage[] = [];
+        for (const item of externalMessages) {
+          const content = typeof item.content === "string" ? item.content : "";
+          const timestamp = typeof item.timestamp === "string" ? item.timestamp : new Date().toISOString();
+          const key = `${timestamp}:${content}`;
+          if (!content || humanReplyKeysRef.current.has(key)) continue;
+          humanReplyKeysRef.current.add(key);
+          const isHuman = item.role === "human_agent";
+          additions.push({
+            role: isHuman ? "human_agent" : "agent",
+            content,
+            timestamp,
+            agentName: isHuman && typeof item.agent_name === "string" ? item.agent_name : undefined,
+          });
+        }
+        if (additions.length) {
+          setMessages((items) => [...items, ...additions]);
+          speakReply(additions[additions.length - 1].content);
+        }
+      } catch {
+        return;
+      }
+    }
+    const interval = window.setInterval(() => {
+      void pollHumanReplies();
+    }, 5000);
+    void pollHumanReplies();
+    return () => {
+      cancelled = true;
+      window.clearInterval(interval);
+    };
+  }, [selected.customer_id, speakReply]);
+
   function chooseCustomer(customer: CustomerProfile) {
-    streamRef.current?.close();
+    if (streamRef.current) closeStream(streamRef.current);
     setSelected(customer);
     setMessages(initialMessages(customer));
+    humanReplyKeysRef.current.clear();
     setInput("");
     setSteps(resetSteps());
     setStatus("READY");
     setHealth(customer.risk === "HIGH" ? 46 : customer.risk === "MEDIUM" ? 63 : 78);
     setRelationship({ start: customer.risk === "HIGH" ? 29 : customer.risk === "MEDIUM" ? 52 : 74, end: customer.risk === "HIGH" ? 29 : customer.risk === "MEDIUM" ? 52 : 74 });
+  }
+
+  function startVoiceInput() {
+    if (typeof window === "undefined" || status === "THINKING" || isListening) return;
+    const Recognition = window.SpeechRecognition ?? window.webkitSpeechRecognition;
+    if (!Recognition) {
+      setVoiceNotice("Voice input is not supported in this browser. You can keep typing normally.");
+      return;
+    }
+    setVoiceNotice(null);
+    const recognition = new Recognition();
+    recognition.lang = "en-IN";
+    recognition.interimResults = false;
+    recognition.maxAlternatives = 1;
+    recognition.onresult = (event) => {
+      const lastResult = event.results[event.results.length - 1];
+      const transcript = lastResult?.[0]?.transcript?.trim();
+      if (transcript) setInput(transcript);
+    };
+    recognition.onend = () => setIsListening(false);
+    recognition.onerror = () => setIsListening(false);
+    setIsListening(true);
+    recognition.start();
+  }
+
+  function toggleTts() {
+    if (typeof window === "undefined" || !("speechSynthesis" in window)) {
+      setVoiceNotice("Spoken replies are not supported in this browser.");
+      setTtsEnabled(false);
+      return;
+    }
+    setVoiceNotice(null);
+    setTtsEnabled((enabled) => !enabled);
+  }
+
+  async function resetDemoData() {
+    if (status === "THINKING" || resetting) return;
+    setResetting(true);
+    try {
+      const response = await fetch("/api/demo/reset", { method: "POST" });
+      if (!response.ok) throw new Error(`Reset failed with ${response.status}`);
+      const freshSessionId = createSessionId();
+      window.sessionStorage.setItem(TAB_SESSION_STORAGE_KEY, freshSessionId);
+      sessionIdRef.current = freshSessionId;
+      setMessages(initialMessages(selected));
+      setInput("");
+      setSteps(resetSteps());
+      setStatus("READY");
+      setHealth(selected.risk === "HIGH" ? 46 : selected.risk === "MEDIUM" ? 63 : 78);
+      setRelationship({
+        start: selected.risk === "HIGH" ? 29 : selected.risk === "MEDIUM" ? 52 : 74,
+        end: selected.risk === "HIGH" ? 29 : selected.risk === "MEDIUM" ? 52 : 74,
+      });
+    } catch (error) {
+      console.error("Demo reset failed", error);
+      setMessages((items) => [
+        ...items,
+        {
+          role: "agent",
+          content: "I could not reset the demo data. Check that FastAPI is running, then try again.",
+          timestamp: new Date().toISOString(),
+        },
+      ]);
+    } finally {
+      setResetting(false);
+    }
   }
 
   function sendMessage(text = input) {
@@ -207,20 +457,53 @@ export function LiveAgentConsole({
       { role: "customer", content: normalized, timestamp: new Date().toISOString() },
     ]);
 
-    const params = new URLSearchParams({ customer_id: selected.customer_id, message: normalized });
+    const activeSessionId = sessionIdRef.current || getOrCreateTabSessionId();
+    sessionIdRef.current = activeSessionId;
+    const params = new URLSearchParams({
+      customer_id: selected.customer_id,
+      session_id: activeSessionId,
+      message: normalized,
+    });
     const stream = new EventSource(`/api/chat/message/stream?${params.toString()}`);
     streamRef.current = stream;
+    armStreamWatchdog(stream);
 
     stream.onmessage = (event) => {
-      const data = JSON.parse(event.data) as {
+      armStreamWatchdog(stream);
+      if (!event.data.trim()) return;
+
+      let data: {
         step: PipelineStepId;
         status: PipelineStatus;
         result: Record<string, unknown>;
       };
+      try {
+        data = JSON.parse(event.data) as {
+          step: PipelineStepId;
+          status: PipelineStatus;
+          result: Record<string, unknown>;
+        };
+      } catch (error) {
+        console.error("Malformed chat stream frame", { frame: event.data, error });
+        markStreamStopped(
+          stream,
+          "The live chat stream returned a malformed update, so I stopped the run before it could get stuck. Please try sending the message again.",
+          "Malformed stream frame"
+        );
+        return;
+      }
 
       setSteps((items) =>
         items.map((step) =>
-          step.id === data.step ? { ...step, status: data.status, result: data.result ?? {} } : step
+          step.id === data.step
+            ? {
+                ...step,
+                status: data.status,
+                result: data.result ?? {},
+                startedAt: data.status === "running" ? Date.now() : step.startedAt,
+                durationMs: data.status === "done" && step.startedAt ? Date.now() - step.startedAt : step.durationMs,
+              }
+            : step
         )
       );
 
@@ -240,26 +523,23 @@ export function LiveAgentConsole({
           ? (data.result.verified_claims as VerifiedClaim[])
           : [];
         const trust = (data.result.trust as TrustInfo | null) ?? null;
+        const language = typeof data.result.language === "string" ? data.result.language : undefined;
         setMessages((items) => [
           ...items,
-          { role: "agent", content: text, timestamp: new Date().toISOString(), toolResults: currentToolResults, handoff, verifiedClaims, trust },
+          { role: "agent", content: text, timestamp: new Date().toISOString(), toolResults: currentToolResults, handoff, verifiedClaims, trust, language },
         ]);
+        speakReply(text);
         setStatus("RESOLVED");
-        stream.close();
+        closeStream(stream);
       }
     };
 
     stream.onerror = () => {
-      setStatus("READY");
-      setMessages((items) => [
-        ...items,
-        {
-          role: "agent",
-          content: "The live chat stream could not complete. Check that FastAPI is running on port 8000.",
-          timestamp: new Date().toISOString(),
-        },
-      ]);
-      stream.close();
+      markStreamStopped(
+        stream,
+        "The live chat stream could not complete. Check that FastAPI is running on port 8000.",
+        "Stream connection failed"
+      );
     };
   }
 
@@ -274,8 +554,18 @@ export function LiveAgentConsole({
             {subtitle}
           </p>
         </div>
-        <div className="px-3 py-2 rounded-lg text-xs font-mono" style={{ background: "rgba(20,184,166,0.08)", border: "1px solid rgba(20,184,166,0.25)", color: "#5eead4" }}>
-          {status} · {completedSteps}/6
+        <div className="flex items-center gap-2">
+          <button
+            onClick={resetDemoData}
+            disabled={status === "THINKING" || resetting}
+            className="px-3 py-2 rounded-lg text-xs font-semibold transition-opacity disabled:opacity-50"
+            style={{ background: "rgba(255,255,255,0.06)", border: "1px solid var(--border)", color: "var(--text-secondary)" }}
+          >
+            {resetting ? "Resetting..." : "Reset demo data"}
+          </button>
+          <div className="px-3 py-2 rounded-lg text-xs font-mono" style={{ background: "rgba(20,184,166,0.08)", border: "1px solid rgba(20,184,166,0.25)", color: "#5eead4" }}>
+            {status} · {completedSteps}/6
+          </div>
         </div>
       </div>
 
@@ -326,13 +616,28 @@ export function LiveAgentConsole({
           <div className="flex-1 p-5 space-y-4 overflow-y-auto">
             {messages.map((message, index) => {
               const customer = message.role === "customer";
+              const human = message.role === "human_agent";
               return (
                 <div key={`${message.timestamp}-${index}`} className={`flex ${customer ? "justify-end" : "justify-start"}`}>
                   <div className={`flex gap-2 max-w-[94%] sm:max-w-[82%] ${customer ? "flex-row-reverse" : ""}`}>
                     <span className="w-8 h-8 rounded-full flex items-center justify-center shrink-0" style={customer ? { background: "rgba(20,184,166,0.14)", color: "#5eead4" } : { background: "rgba(99,102,241,0.18)", color: "#a5b4fc" }}>
                       {customer ? <User size={14} /> : <Bot size={14} />}
                     </span>
-                    <div className="rounded-xl px-3 py-2 text-sm leading-relaxed" style={customer ? { background: "rgba(20,184,166,0.15)", border: "1px solid rgba(20,184,166,0.26)", color: "var(--text-primary)" } : { background: "var(--surface-3)", border: "1px solid var(--border)", color: "var(--text-primary)" }}>
+                    <div className="rounded-xl px-3 py-2 text-sm leading-relaxed" style={customer ? { background: "rgba(20,184,166,0.15)", border: "1px solid rgba(20,184,166,0.26)", color: "var(--text-primary)" } : human ? { background: "rgba(168,85,247,0.12)", border: "1px solid rgba(168,85,247,0.35)", color: "var(--text-primary)" } : { background: "var(--surface-3)", border: "1px solid var(--border)", color: "var(--text-primary)" }}>
+                      {human && (
+                        <p className="mb-1 text-[10px] font-semibold uppercase tracking-widest" style={{ color: "#c4b5fd" }}>
+                          {message.agentName ?? "Human specialist"}
+                        </p>
+                      )}
+                      {message.role === "agent" && message.language && message.language !== "English" && (
+                        <div
+                          className="mb-1.5 inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[10px] font-semibold"
+                          style={{ background: "rgba(94,234,212,0.10)", border: "1px solid rgba(94,234,212,0.35)", color: "#5eead4" }}
+                          title={`Replied in ${message.language}, the customer's preferred language`}
+                        >
+                          Replied in {message.language}
+                        </div>
+                      )}
                       {message.content}
                       {message.toolResults && message.toolResults.map((tool: Record<string, unknown>, idx: number) => {
                         if (tool.tool_name === "check_outage_status") return <OutageWidget key={idx} result={tool.result as Record<string, unknown>} />;
@@ -357,6 +662,7 @@ export function LiveAgentConsole({
                 {runningStep ? runningStep.label : "Working through the request"}
               </div>
             )}
+            <div ref={messagesEndRef} />
           </div>
 
           <div className="border-t p-4" style={{ borderColor: "var(--border)" }}>
@@ -378,18 +684,39 @@ export function LiveAgentConsole({
                 })}
               </div>
             )}
-            <div className="flex gap-2">
+            <div className="flex flex-wrap gap-2">
               <input
                 value={input}
                 onChange={(event) => setInput(event.target.value)}
                 onKeyDown={(event) => {
-                  if (event.key === "Enter") sendMessage();
+                  if (event.key !== "Enter" || event.shiftKey || event.nativeEvent.isComposing) return;
+                  event.preventDefault();
+                  sendMessage();
                 }}
                 disabled={status === "THINKING"}
                 placeholder="Type a customer message..."
-                className="flex-1 rounded-lg px-3 py-2 text-sm outline-none"
+                className="flex-1 min-w-[140px] rounded-lg px-3 py-2 text-sm outline-none"
                 style={{ background: "var(--surface-3)", border: "1px solid var(--border)", color: "var(--text-primary)" }}
               />
+              <button
+                onClick={startVoiceInput}
+                disabled={status === "THINKING" || isListening}
+                title="Use voice input"
+                className="px-3 py-2 rounded-lg flex items-center gap-2 text-sm font-semibold disabled:opacity-50"
+                style={{ background: isListening ? "rgba(245,158,11,0.14)" : "rgba(255,255,255,0.04)", border: "1px solid var(--border)", color: isListening ? "#fbbf24" : "#5eead4" }}
+              >
+                <Mic size={14} />
+                {isListening ? "Listening" : "Mic"}
+              </button>
+              <button
+                onClick={toggleTts}
+                title="Toggle spoken replies"
+                className="px-3 py-2 rounded-lg flex items-center gap-2 text-sm font-semibold"
+                style={{ background: ttsEnabled ? "rgba(20,184,166,0.12)" : "rgba(255,255,255,0.04)", border: "1px solid var(--border)", color: ttsEnabled ? "#5eead4" : "var(--text-secondary)" }}
+              >
+                <Volume2 size={14} />
+                Voice
+              </button>
               <button
                 onClick={() => sendMessage()}
                 disabled={status === "THINKING"}
@@ -400,6 +727,11 @@ export function LiveAgentConsole({
                 Send
               </button>
             </div>
+            {voiceNotice && (
+              <p className="mt-2 rounded-lg px-3 py-2 text-xs" style={{ background: "rgba(245,158,11,0.1)", border: "1px solid rgba(245,158,11,0.24)", color: "#fbbf24" }}>
+                {voiceNotice}
+              </p>
+            )}
           </div>
         </section>
 
@@ -424,6 +756,7 @@ function ReasoningPanel({
   health: number;
   relationship: { start: number; end: number };
 }) {
+  const [expanded, setExpanded] = useState(true);
   return (
     <aside className="glass p-4 h-fit xl:h-full xl:min-h-0 xl:overflow-y-auto">
       <div className="flex items-center justify-between mb-4">
@@ -447,12 +780,56 @@ function ReasoningPanel({
         </div>
       </div>
 
-      <div className="space-y-3">
-        {steps.map((step) => (
-          <PipelineStepCard key={step.id} step={step} />
-        ))}
+      <div className="mb-4 rounded-lg p-3" style={{ background: "var(--surface-3)", border: "1px solid var(--border)" }}>
+        <div className="mb-3 flex items-center justify-between gap-3">
+          <p className="text-xs font-semibold uppercase tracking-widest" style={{ color: "var(--text-muted)" }}>Pipeline</p>
+          <button
+            onClick={() => setExpanded((value) => !value)}
+            className="rounded-md px-2 py-1 text-[11px] font-semibold"
+            style={{ background: "rgba(255,255,255,0.04)", border: "1px solid var(--border)", color: "var(--text-secondary)" }}
+          >
+            {expanded ? "Collapse" : "Expand"}
+          </button>
+        </div>
+        <PipelineRail steps={steps} />
       </div>
+
+      {expanded && (
+        <div className="space-y-3">
+          {steps.map((step) => (
+            <PipelineStepCard key={step.id} step={step} />
+          ))}
+        </div>
+      )}
     </aside>
+  );
+}
+
+function PipelineRail({ steps }: { steps: PipelineStep[] }) {
+  return (
+    <div className="grid grid-cols-6 gap-2">
+      {steps.map((step) => {
+        const done = step.status === "done";
+        const running = step.status === "running";
+        return (
+          <div key={step.id} className="min-w-0">
+            <div
+              className="h-2 rounded-full transition-all duration-500"
+              style={{
+                background: done ? "#10b981" : running ? "#5eead4" : "rgba(255,255,255,0.08)",
+                boxShadow: running ? "0 0 14px rgba(94,234,212,0.45)" : "none",
+              }}
+            />
+            <p className="mt-2 truncate text-[10px] font-semibold" style={{ color: done || running ? "#5eead4" : "var(--text-muted)" }}>
+              {step.id}
+            </p>
+            <p className="font-mono text-[10px]" style={{ color: "var(--text-muted)" }}>
+              {step.durationMs ? `${step.durationMs}ms` : running ? "..." : "--"}
+            </p>
+          </div>
+        );
+      })}
+    </div>
   );
 }
 
@@ -471,6 +848,11 @@ function PipelineStepCard({ step }: { step: PipelineStep }) {
           <p className="text-sm font-semibold" style={{ color: "var(--text-primary)" }}>{step.label}</p>
           <p className="text-[11px]" style={{ color: done ? "#5eead4" : "var(--text-muted)" }}>{running ? "Running..." : done ? "Done" : "Waiting"}</p>
         </div>
+        {step.durationMs && (
+          <span className="ml-auto font-mono text-[11px]" style={{ color: "var(--text-muted)" }}>
+            {step.durationMs}ms
+          </span>
+        )}
       </div>
       {done && <StepResult step={step} />}
     </div>

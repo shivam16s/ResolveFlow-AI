@@ -8,12 +8,12 @@ import {
 import { motion } from "framer-motion";
 import {
   Activity, CheckCircle2, AlertTriangle, ShieldCheck,
-  CreditCard, Ticket, UsersRound, HeartPulse,
+  CreditCard, Ticket, UsersRound, HeartPulse, Gauge, Coins, Timer,
 } from "lucide-react";
 import { KpiCard } from "@/components/KpiCard";
 import { api } from "@/lib/api";
 import { formatPct, formatInr } from "@/lib/utils";
-import type { KpiOverview, OverviewCharts } from "@/lib/types";
+import type { KpiOverview, OverviewCharts, TelemetrySummary } from "@/lib/types";
 
 function PanelState({ label }: { label: string }) {
   return (
@@ -45,9 +45,33 @@ function SectionTitle({ children }: { children: React.ReactNode }) {
   );
 }
 
+function TelemetryCard({
+  title,
+  value,
+  sub,
+  icon,
+}: {
+  title: string;
+  value: string | number;
+  sub: string;
+  icon: React.ReactNode;
+}) {
+  return (
+    <div className="glass p-4">
+      <div className="flex items-center justify-between gap-3">
+        <p className="text-[11px] font-semibold uppercase tracking-widest" style={{ color: "var(--text-muted)" }}>{title}</p>
+        <span style={{ color: "#5eead4" }}>{icon}</span>
+      </div>
+      <p className="mt-3 font-mono text-2xl font-bold" style={{ color: "#5eead4" }}>{value}</p>
+      <p className="mt-1 text-xs" style={{ color: "var(--text-secondary)" }}>{sub}</p>
+    </div>
+  );
+}
+
 export default function OverviewPage() {
   const { data: kpi, error: kpiError, isLoading: kpiLoading } = useSWR<KpiOverview>("dashboard-kpi", api.overview.kpi);
   const { data: charts, error: chartError, isLoading: chartLoading } = useSWR<OverviewCharts>("dashboard-charts", api.overview.charts);
+  const { data: telemetry } = useSWR<TelemetrySummary>("telemetry-summary", api.overview.telemetry);
 
   const kpis = kpi ? [
     { title: "Total Cases Today", value: kpi.total_cases_today, sub: "SQLite conversations", icon: <Activity size={13} style={{ color: "#14b8a6" }} /> },
@@ -80,6 +104,30 @@ export default function OverviewPage() {
             ))}
           </div>
         )}
+      </section>
+
+      <section className="mb-8">
+        <SectionTitle>Ops Telemetry</SectionTitle>
+        <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
+          <TelemetryCard
+            title="p50 / p95 latency"
+            value={`${Math.round(telemetry?.p50_latency_ms ?? 0)} / ${Math.round(telemetry?.p95_latency_ms ?? 0)} ms`}
+            sub={`${telemetry?.turns ?? 0} recorded turns`}
+            icon={<Timer size={14} />}
+          />
+          <TelemetryCard
+            title="Tokens per resolution"
+            value={telemetry?.avg_tokens_per_resolution ?? 0}
+            sub="rough chat-turn token estimate"
+            icon={<Gauge size={14} />}
+          />
+          <TelemetryCard
+            title="Est. cost per resolution"
+            value={`₹${(telemetry?.estimated_cost_inr ?? 0).toFixed(4)}`}
+            sub="based on recorded tokens"
+            icon={<Coins size={14} />}
+          />
+        </div>
       </section>
 
       <section>

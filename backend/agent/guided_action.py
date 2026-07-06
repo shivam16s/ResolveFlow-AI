@@ -348,17 +348,65 @@ class GuidedActionCoordinator:
             timestamp=timestamp,
         )
 
-        raw_tool_result = resolved_tool(self.customer_id)
-        tool_result = _normalize_tool_result(raw_tool_result)
-        evaluator = success_evaluator or _default_verification_success
-        verified = bool(evaluator(tool_result))
+        try:
+            raw_tool_result = resolved_tool(self.customer_id)
+        except Exception as exc:  # noqa: BLE001 - failed verifiers must not strand VERIFYING.
+            return self._finish_verification(
+                user_report=normalized_report,
+                tool_name=normalized_tool_name,
+                tool_result=_verification_error_result(exc),
+                verified=False,
+                reason="verification tool raised an error",
+                verify_metadata=verify_metadata,
+                timestamp=timestamp,
+            )
+
+        try:
+            tool_result = _normalize_tool_result(raw_tool_result)
+            evaluator = success_evaluator or _default_verification_success
+            verified = bool(evaluator(tool_result))
+        except Exception:
+            self._finish_verification(
+                user_report=normalized_report,
+                tool_name=normalized_tool_name,
+                tool_result=_verification_error_result(
+                    ValueError("verification tool returned an invalid result")
+                ),
+                verified=False,
+                reason="verification result could not be evaluated",
+                verify_metadata=verify_metadata,
+                timestamp=timestamp,
+            )
+            raise
+
+        return self._finish_verification(
+            user_report=normalized_report,
+            tool_name=normalized_tool_name,
+            tool_result=tool_result,
+            verified=verified,
+            reason="verification tool confirmed resolution" if verified else "verification tool did not confirm resolution",
+            verify_metadata=verify_metadata,
+            timestamp=timestamp,
+        )
+
+    def _finish_verification(
+        self,
+        *,
+        user_report: str,
+        tool_name: str,
+        tool_result: dict[str, Any],
+        verified: bool,
+        reason: str,
+        verify_metadata: dict[str, Any],
+        timestamp: str | None,
+    ) -> GuidedActionVerification:
         next_state = GuidedActionState.RESOLVED if verified else GuidedActionState.FAILED
         self.transition(
             next_state,
-            "verification tool confirmed resolution" if verified else "verification tool did not confirm resolution",
+            reason,
             metadata={
                 "attempt_number": self.attempt_count,
-                "tool_name": normalized_tool_name,
+                "tool_name": tool_name,
                 "tool_result": tool_result,
             },
             timestamp=timestamp,
@@ -366,8 +414,8 @@ class GuidedActionCoordinator:
         self.last_verification = GuidedActionVerification(
             action_name=self.action_name,
             customer_id=self.customer_id,
-            user_report=normalized_report,
-            tool_name=normalized_tool_name,
+            user_report=user_report,
+            tool_name=tool_name,
             tool_result=tool_result,
             verified=verified,
             state=self.state,
@@ -543,6 +591,15 @@ def _normalize_tool_result(raw_tool_result: Any) -> dict[str, Any]:
         raise ValueError(
             "verification_tool must return a dict or an object with to_dict()")
     return dict(raw_tool_result)
+
+
+def _verification_error_result(exc: Exception) -> dict[str, Any]:
+    return {
+        "ok": False,
+        "verification_error": True,
+        "error_type": exc.__class__.__name__,
+        "error": str(exc),
+    }
 
 
 def _normalize_optional_dict(raw_value: Any) -> dict[str, Any] | None:

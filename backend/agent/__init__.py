@@ -138,7 +138,7 @@ from .policy_store import ChromaPolicyStore, PolicyChunk, PolicyDocument, Policy
 from .memory import MemoryUnit, decompose_to_memory_units, fact_augmented_expansion, time_aware_expansion
 from .llm_client import LLMClient
 from .memory_store import ChromaMemoryStore, MemorySearchResult
-from .resolution_loop import IssueResolution, ResolutionRun, SequentialResolutionLoop
+from .resolution_loop import IssueResolution, IssueResolverError, ResolutionRun, SequentialResolutionLoop
 from .slot_schema import (
     MissingSlot,
     REQUIRED_SLOTS,
@@ -247,6 +247,7 @@ __all__ = [
     "build_refund_exception_dag",
     "build_service_credit_dag",
     "build_technician_dispatch_dag",
+    "IssueResolverError",
     "ResolutionRun",
     "REQUIRED_SLOTS",
     "SLOT_SCHEMA",

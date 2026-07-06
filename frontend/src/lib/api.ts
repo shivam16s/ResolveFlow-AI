@@ -1,31 +1,40 @@
 // API calls go to Next.js dev server which proxies /api/* → backend (see next.config.ts)
 const BASE = "";
 
-async function get<T>(path: string): Promise<T> {
+async function get<T>(path: string, extraHeaders?: Record<string, string>): Promise<T> {
   const res = await fetch(`${BASE}${path}`, {
-    headers: { "Accept": "application/json", "Content-Type": "application/json" },
+    headers: { "Accept": "application/json", "Content-Type": "application/json", ...extraHeaders },
     cache: "no-store",
   });
   if (!res.ok) throw new Error(`API ${path} → ${res.status}`);
   return res.json() as Promise<T>;
 }
 
-async function post<T>(path: string, body?: unknown): Promise<T> {
+async function post<T>(path: string, body?: unknown, extraHeaders?: Record<string, string>): Promise<T> {
   const res = await fetch(`${BASE}${path}`, {
     method: "POST",
-    headers: { "Accept": "application/json", "Content-Type": "application/json" },
+    headers: { "Accept": "application/json", "Content-Type": "application/json", ...extraHeaders },
     body: body ? JSON.stringify(body) : undefined,
   });
   if (!res.ok) throw new Error(`API ${path} → ${res.status}`);
   return res.json() as Promise<T>;
 }
 
+// Only set when deploying publicly (must match the backend's
+// RESOLVEFLOW_AGENT_DESK_TOKEN) -- see backend/api/routes.py for why this is
+// a casual-scanning deterrent, not real access control.
+const AGENT_DESK_HEADERS = process.env.NEXT_PUBLIC_AGENT_DESK_TOKEN
+  ? { "x-agent-desk-token": process.env.NEXT_PUBLIC_AGENT_DESK_TOKEN }
+  : undefined;
+
 import type {
   AuditLogEntry,
   CaseDetail,
   CaseListResponse,
   EvaluationReport,
+  EvaluationRunResponse,
   KpiOverview,
+  TelemetrySummary,
   OverviewCharts,
   MemorySearchResult,
   PolicyRetrievalResult,
@@ -40,6 +49,13 @@ import type {
   ContextCardRequest,
   OpeningLineRequest,
   AuditLogRequest,
+  AgentDeskQueueResponse,
+  AgentDeskProactiveResponse,
+  AgentDeskHandoffDetail,
+  AgentDeskReplyResponse,
+  AgentDeskResolveResponse,
+  SecurityAttackResult,
+  OutageTriggerResponse,
 } from "./types";
 
 export const api = {
@@ -75,7 +91,8 @@ export const api = {
   overview: {
     kpi:      () => get<KpiOverview>("/api/dashboard/overview"),
     charts:   () => get<OverviewCharts>("/api/dashboard/charts"),
-    insights: () => get<{insights: string}>("/api/insights"),
+    telemetry: () => get<TelemetrySummary>("/api/telemetry/summary"),
+    insights: () => get<{insights: string, source?: string, fallback?: boolean, error?: string}>("/api/insights"),
   },
   cases: {
     list:       (page = 1, limit = 20) => get<CaseListResponse>(`/api/cases?page=${page}&limit=${limit}`),
@@ -85,6 +102,30 @@ export const api = {
   },
   evaluation: {
     results: () => get<EvaluationReport>("/api/evaluation/results"),
-    run:     () => post<{ job_id: string }>("/api/evaluation/run"),
+    run:     () => post<EvaluationRunResponse>("/api/evaluation/run"),
+  },
+  agentDesk: {
+    queue: () => get<AgentDeskQueueResponse>("/api/agent-desk/queue", AGENT_DESK_HEADERS),
+    proactive: () => get<AgentDeskProactiveResponse>("/api/agent-desk/proactive", AGENT_DESK_HEADERS),
+    detail: (handoff_id: string) =>
+      get<AgentDeskHandoffDetail>(`/api/agent-desk/handoffs/${encodeURIComponent(handoff_id)}`, AGENT_DESK_HEADERS),
+    reply: (handoff_id: string, message: string, agent_name = "Human specialist") =>
+      post<AgentDeskReplyResponse>(`/api/agent-desk/handoffs/${encodeURIComponent(handoff_id)}/reply`, { message, agent_name }, AGENT_DESK_HEADERS),
+    resolve: (handoff_id: string, resolution_note: string, agent_name = "Human specialist") =>
+      post<AgentDeskResolveResponse>(`/api/agent-desk/handoffs/${encodeURIComponent(handoff_id)}/resolve`, { resolution_note, agent_name }, AGENT_DESK_HEADERS),
+  },
+  security: {
+    attack: (attack_id: string, prompt: string) =>
+      post<SecurityAttackResult>("/api/security/attack", { attack_id, prompt }),
+  },
+  outages: {
+    trigger: (location: string, duration_hours = 7, credit_amount = 100) =>
+      post<OutageTriggerResponse>("/api/outages/trigger", {
+        location,
+        duration_hours,
+        verified: true,
+        initiate_proactive: true,
+        credit_amount,
+      }, AGENT_DESK_HEADERS),
   },
 };

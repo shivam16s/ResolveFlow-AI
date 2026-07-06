@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import re
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import asdict, dataclass
 from typing import Any, Callable
 
@@ -17,6 +18,7 @@ RETRIEVE_TOKEN_LABELS = {
 CRAG_RELEVANCE_LABELS = ("relevant", "ambiguous", "irrelevant")
 CRAG_RELEVANT_THRESHOLD = 0.6
 CRAG_IRRELEVANT_THRESHOLD = 0.2
+CRAG_MAX_STRIP_EVALUATION_WORKERS = 6
 
 
 @dataclass(frozen=True)
@@ -252,12 +254,12 @@ def crag_correct_path(
         max_strip_tokens=max_strip_tokens,
     )
     evaluator = CRAGRelevanceEvaluator(llm_client=llm_client)
-    refined = []
-    for strip in strips:
-        evaluation = evaluator.evaluate(normalized_query, strip.text)
-        if evaluation.score > threshold:
-            refined.append(ScoredPolicyStrip(
-                strip=strip, evaluation=evaluation))
+    refined = _score_policy_strips(
+        normalized_query,
+        strips,
+        evaluator=evaluator,
+        threshold=threshold,
+    )
 
     refined.sort(
         key=lambda item: (
@@ -326,7 +328,7 @@ def crag_incorrect_path(
     retry_results = policy_store.query(rewrite.rewritten_query, top_k=top_k)
     candidates = _policy_candidates_from_query_results(retry_results)
     evaluator = CRAGRelevanceEvaluator(llm_client=llm_client)
-    refined = []
+    all_strips = []
     strips_considered = 0
 
     for candidate in candidates:
@@ -338,11 +340,14 @@ def crag_incorrect_path(
             max_strip_tokens=max_strip_tokens,
         )
         strips_considered += len(strips)
-        for strip in strips:
-            evaluation = evaluator.evaluate(normalized_query, strip.text)
-            if evaluation.score > threshold:
-                refined.append(ScoredPolicyStrip(
-                    strip=strip, evaluation=evaluation))
+        all_strips.extend(strips)
+
+    refined = _score_policy_strips(
+        normalized_query,
+        all_strips,
+        evaluator=evaluator,
+        threshold=threshold,
+    )
 
     refined.sort(
         key=lambda item: (
@@ -1023,13 +1028,61 @@ def _score_policy_strips(
     evaluator: CRAGRelevanceEvaluator,
     threshold: float,
 ) -> list[ScoredPolicyStrip]:
+    if not strips:
+        return []
+
+    max_workers = min(CRAG_MAX_STRIP_EVALUATION_WORKERS, len(strips))
+    if max_workers <= 1:
+        evaluations = [
+            _safe_evaluate_policy_strip(query, strip, evaluator=evaluator)
+            for strip in strips
+        ]
+    else:
+        evaluations: list[tuple[PolicyStrip, CRAGRelevanceEvaluation] | None] = [
+            None
+        ] * len(strips)
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            futures = {
+                executor.submit(
+                    _safe_evaluate_policy_strip,
+                    query,
+                    strip,
+                    evaluator=evaluator,
+                ): index
+                for index, strip in enumerate(strips)
+            }
+            for future in as_completed(futures):
+                evaluations[futures[future]] = future.result()
+
     refined = []
-    for strip in strips:
-        evaluation = evaluator.evaluate(query, strip.text)
+    for strip, evaluation in evaluations:
         if evaluation.score > threshold:
             refined.append(ScoredPolicyStrip(
                 strip=strip, evaluation=evaluation))
     return refined
+
+
+def _safe_evaluate_policy_strip(
+    query: str,
+    strip: PolicyStrip,
+    *,
+    evaluator: CRAGRelevanceEvaluator,
+) -> tuple[PolicyStrip, CRAGRelevanceEvaluation]:
+    try:
+        evaluation = evaluator.evaluate(query, strip.text)
+    except Exception as exc:
+        evaluation = CRAGRelevanceEvaluation(
+            relevance="irrelevant",
+            score=0.0,
+            is_relevant=False,
+            route="incorrect",
+            rationale=(
+                "CRAG relevance evaluation failed for "
+                f"{strip.strip_id}: {exc.__class__.__name__}."
+            ),
+            evidence_terms=[],
+        )
+    return strip, evaluation
 
 
 def _normalize_external_policy_strips(

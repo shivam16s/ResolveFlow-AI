@@ -1,13 +1,18 @@
 import asyncio
+import copy
 import hashlib
 import hmac
 import json
 import os
+import re
 import sqlite3
 import logging
-from datetime import datetime, timedelta, timezone
+import time
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
+from threading import Lock
 from typing import Any
+from uuid import uuid4
 
 from fastapi import APIRouter, Query, Request
 from fastapi.responses import StreamingResponse
@@ -21,14 +26,25 @@ from backend.agent import (
     detect_handoff_triggers,
     generate_acknowledgment,
     generate_handoff_customer_message,
+    insert_human_handoff_queue,
     load_taken_actions,
+    log_handoff_event_to_audit,
 )
+from backend.agent.policy_graph import PolicyGraphValidator
 from backend.agent.policy_store import ChromaPolicyStore
-from backend.agent.llm_client import GeminiClientError
+from backend.agent.health import (
+    compute_health_score,
+    knowledge_coverage_component,
+    loop_penalty_component,
+    missing_info_risk_component,
+    sentiment_score_component,
+)
 from backend.tools import (
+    apply_credit,
     check_duplicate_charge,
     check_outage_status,
     create_ticket,
+    generate_handoff_summary,
     get_invoice_history,
     lookup_customer,
     retrieve_policy,
@@ -36,8 +52,11 @@ from backend.tools import (
 )
 
 router = APIRouter(prefix="/api/chat", tags=["chat"])
-_CHAT_STATES: dict[str, dict[str, Any]] = {}
-_MEMORY_CANCELLATION_REQUESTS: dict[str, dict[str, Any]] = {}
+_ChatStateKey = tuple[str, str]
+_CHAT_STATES: dict[_ChatStateKey, dict[str, Any]] = {}
+_CHAT_STATE_LOCKS: dict[_ChatStateKey, tuple[asyncio.AbstractEventLoop, asyncio.Lock]] = {}
+_CHAT_STATE_LOCKS_GUARD = Lock()
+_MEMORY_CANCELLATION_REQUESTS: dict[_ChatStateKey, dict[str, Any]] = {}
 
 
 def _event(step: str, status: str, result: dict[str, Any] | None = None) -> str:
@@ -49,9 +68,20 @@ def _event(step: str, status: str, result: dict[str, Any] | None = None) -> str:
 def chat_message_stream(
     request: Request,
     customer_id: str = Query(..., min_length=1),
+    session_id: str = Query("default", min_length=1),
     message: str = Query(..., min_length=1),
+    temperature: float | None = Query(None, ge=0.0, le=2.0),
 ) -> StreamingResponse:
-    async def generate():
+    normalized_session_id = _normalize_session_id(session_id)
+    llm_temperature = (
+        float(temperature)
+        if isinstance(temperature, (int, float)) and 0.0 <= float(temperature) <= 2.0
+        else None
+    )
+
+    async def generate_unlocked():
+        turn_started = time.perf_counter()
+        stage_timings: dict[str, float] = {}
         db_path = Path(request.app.state.db_path)
         policy_dir = Path(request.app.state.policy_dir)
         policy_store: ChromaPolicyStore | None = getattr(
@@ -59,9 +89,13 @@ def chat_message_stream(
 
         llm = _safe_llm_client()
         classifier_llm = _safe_classifier_client()
-        chat_state = _load_session_state(customer_id, db_path)
-        chat_state["turn_count"] = int(chat_state.get("turn_count", 0)) + 1
-        backend_intent = _normalize_chat_intent(message, chat_state)
+        state_lock = _chat_state_lock(customer_id, normalized_session_id)
+        async with state_lock:
+            chat_state = await asyncio.to_thread(
+                _load_session_state, customer_id, normalized_session_id, db_path
+            )
+            chat_state["turn_count"] = int(chat_state.get("turn_count", 0)) + 1
+            backend_intent = _normalize_chat_intent(message, chat_state)
 
         queue = asyncio.Queue()
 
@@ -71,6 +105,7 @@ def chat_message_stream(
         # the SSE connection. The try/except guarantees the "done" is always sent
         # so a tool/DB error degrades gracefully instead of deadlocking the stream.
         async def _run_intent():
+            stage_started = time.perf_counter()
             await queue.put(_event("intent", "running"))
             try:
                 classification = await asyncio.to_thread(_classify_message, message, classifier_llm)
@@ -90,15 +125,32 @@ def chat_message_stream(
                 if backend_intent in {"cancellation_request", "cancellation_confirmation"} and "cancellation_intent" not in res_intents:
                     res_intents.append("cancellation_intent")
                     issue_queue = build_issue_queue(res_intents)
+                if _has_outage_signal(message) and "service_outage" not in res_intents:
+                    res_intents.append("service_outage")
+                    issue_queue = build_issue_queue(res_intents)
+                if _has_payment_problem_signal(message) and "billing_dispute" not in res_intents:
+                    res_intents.append("billing_dispute")
+                    issue_queue = build_issue_queue(res_intents)
+                if _has_refund_signal(message) and "refund_request" not in res_intents:
+                    res_intents.append("refund_request")
+                    issue_queue = build_issue_queue(res_intents)
+                if (
+                    "duplicate_charge" in res_intents
+                    and _has_human_or_fix_signal(message)
+                    and "refund_request" not in res_intents
+                ):
+                    res_intents.append("refund_request")
+                    issue_queue = build_issue_queue(res_intents)
                 payload = {
                     "intents": res_intents,
                     "latest_intent": backend_intent or classification.primary_intent,
                     "emotion": emotion,
                     "confidence": classification.intent_confidence,
-                    "queue": res_intents,
+                    "queue": [issue.intent for issue in issue_queue],
                 }
                 await queue.put(_event("intent", "done", payload))
-                return res_intents, emotion, issue_queue
+                stage_timings["intent"] = (time.perf_counter() - stage_started) * 1000
+                return res_intents, emotion, issue_queue, classification.intent_confidence
             except Exception:
                 emotion = _effective_emotion(message, "neutral")
                 fallback_intents = ["general_query"]
@@ -110,20 +162,24 @@ def chat_message_stream(
                     "latest_intent": backend_intent or "general_query",
                     "emotion": emotion,
                     "confidence": 0.0,
-                    "queue": fallback_intents,
+                    "queue": [issue.intent for issue in issue_queue],
                 }))
-                return fallback_intents, emotion, issue_queue
+                stage_timings["intent"] = (time.perf_counter() - stage_started) * 1000
+                return fallback_intents, emotion, issue_queue, 0.0
 
         async def _run_memory():
+            stage_started = time.perf_counter()
             await queue.put(_event("memory", "running"))
             try:
                 res_customer = await asyncio.to_thread(lookup_customer, customer_id, db_path=db_path)
             except Exception:
                 res_customer = None
             await queue.put(_event("memory", "done", res_customer or {}))
+            stage_timings["memory"] = (time.perf_counter() - stage_started) * 1000
             return res_customer
 
         async def _run_policy():
+            stage_started = time.perf_counter()
             await queue.put(_event("policy", "running"))
             res_policy_results = []
             if policy_store is not None:
@@ -156,6 +212,7 @@ def chat_message_stream(
                 except Exception:
                     res_policy_results = []
             await queue.put(_event("policy", "done", {"policies": res_policy_results}))
+            stage_timings["policy"] = (time.perf_counter() - stage_started) * 1000
             return res_policy_results
 
         # Start background tasks
@@ -168,18 +225,21 @@ def chat_message_stream(
             yield await queue.get()
 
         # Await the actual results to use them downstream
-        (intents, emotion, issue_queue), customer, policy_results = await asyncio.gather(
+        (intents, emotion, issue_queue, intent_confidence), customer, policy_results = await asyncio.gather(
             intent_task, memory_task, policy_task
         )
 
         # 4. Tools (Dynamic Execution could go here, but for now we run the basics based on intent)
+        tools_started = time.perf_counter()
         yield _event("tools", "running")
         tool_results = []
+        dag_result: dict[str, Any] | None = None
+        dag_forced_handoff_reason: str | None = None
         # A backend/DB fault while calling a tool must not kill the SSE stream:
         # keep whatever evidence was gathered and let the response stage degrade
         # gracefully rather than leaving the connection without a terminal event.
         try:
-            if {"billing_dispute", "duplicate_charge", "refund_request"} & set(intents):
+            if {"billing_dispute", "duplicate_charge"} & set(intents):
                 invoices = await asyncio.to_thread(get_invoice_history, customer_id, months=12, db_path=db_path)
                 tool_results.append({"tool_name": "get_invoice_history", "ok": True,
                                     "summary": f"{len(invoices)} invoices loaded", "result": {"invoices": invoices}})
@@ -196,20 +256,217 @@ def chat_message_stream(
                         "summary": _replay_summary(replay),
                         "result": replay.to_dict(),
                     })
+                    # duplicate_charge_refund_dag is a pure tool-derived decision tree
+                    # (no LLM judgment needed), so it is safe to traverse and act on
+                    # synchronously within this turn -- unlike free-form replies, which
+                    # go through the trust-score/CoVe gate below. Gated on an explicit
+                    # billing/duplicate-charge intent (not bare refund_request): the demo
+                    # customer's seed data always has a duplicate charge on file, so a
+                    # refund_request about something unrelated (e.g. an outage credit)
+                    # would otherwise spuriously open a duplicate-charge ticket/handoff.
+                    if {"billing_dispute", "duplicate_charge"} & set(intents):
+                        try:
+                            dag_context = _duplicate_charge_dag_context(duplicate)
+                            validation = PolicyGraphValidator().run("duplicate_charge_refund_dag", dag_context)
+                            dag_result = {
+                                "dag_name": validation.policy_name,
+                                "policy_status": "compliant",
+                                "action": validation.action or "none",
+                                "path": validation.path,
+                                "ujcs": validation.ujcs,
+                            }
+                            if validation.action in {"create_ticket", "handoff_human"} and not replay.already_taken:
+                                # A human reviewer needs a ticket to work from whether the
+                                # DAG auto-clears it or routes to manual review -- only the
+                                # priority/reason differs. create_ticket() re-validates that
+                                # policy_context resolves to exactly "create_ticket", so the
+                                # auto-clear path can pass it through for that authorization
+                                # check; the manual-review ticket is a bookkeeping side effect
+                                # of the handoff, not itself a DAG-authorized action, so it is
+                                # created without a policy_name/policy_context pair.
+                                escalated = validation.action == "handoff_human"
+                                ticket = await asyncio.to_thread(
+                                    create_ticket,
+                                    customer_id,
+                                    "duplicate_charge_refund_review",
+                                    priority="high" if escalated else "medium",
+                                    status="escalated" if escalated else "open",
+                                    policy_name=None if escalated else "duplicate_charge_refund_dag",
+                                    policy_context=None if escalated else dag_context,
+                                    db_path=db_path,
+                                )
+                                tool_results.append({
+                                    "tool_name": "create_ticket",
+                                    "ok": True,
+                                    "summary": f"ticket {ticket.get('ticket_id')} opened for duplicate-charge review",
+                                    "result": ticket,
+                                })
+                                if escalated:
+                                    dag_forced_handoff_reason = str(
+                                        (validation.action_args or {}).get("reason")
+                                        or "duplicate_charge_refund_manual_review"
+                                    )
+                        except Exception:
+                            dag_result = None
 
             if {"service_outage", "router_issue"} & set(intents):
                 if customer and customer.get("location"):
-                    outage = await asyncio.to_thread(check_outage_status, customer["location"], customer_id=customer_id, db_path=db_path)
-                    tool_results.append({"tool_name": "check_outage_status", "ok": True,
-                                        "summary": _outage_summary(outage), "result": outage})
+                    try:
+                        outage = await asyncio.to_thread(
+                            check_outage_status,
+                            customer["location"],
+                            customer_id=customer_id,
+                            db_path=db_path,
+                        )
+                        tool_results.append({
+                            "tool_name": "check_outage_status",
+                            "ok": True,
+                            "summary": _outage_summary(outage),
+                            "result": outage,
+                        })
+                    except Exception as exc:  # noqa: BLE001 - live agent must degrade to handoff.
+                        outage = {
+                            "verified": False,
+                            "error": str(exc),
+                            "location": customer.get("location"),
+                        }
+                        tool_results.append({
+                            "tool_name": "check_outage_status",
+                            "ok": False,
+                            "summary": "outage lookup failed; escalating with no outage claim",
+                            "result": outage,
+                        })
+                        dag_forced_handoff_reason = "outage_tool_failure"
+                    if _wants_service_credit(message, intents):
+                        service_invoices = _tool_result(tool_results, "get_invoice_history")
+                        if service_invoices is None:
+                            invoices = await asyncio.to_thread(get_invoice_history, customer_id, months=12, db_path=db_path)
+                            service_invoices = {"invoices": invoices}
+                            tool_results.append({
+                                "tool_name": "get_invoice_history",
+                                "ok": True,
+                                "summary": f"{len(invoices)} invoices loaded",
+                                "result": service_invoices,
+                            })
+                        service_context = await asyncio.to_thread(
+                            _service_credit_dag_context,
+                            outage,
+                            customer_id,
+                            db_path,
+                        )
+                        try:
+                            validation = PolicyGraphValidator().run("service_credit_dag", service_context)
+                            dag_result = {
+                                "dag_name": validation.policy_name,
+                                "policy_status": "compliant",
+                                "action": validation.action or "none",
+                                "path": validation.path,
+                                "ujcs": validation.ujcs,
+                            }
+                            if (
+                                validation.action == "apply_credit"
+                                and (validation.action_args or {}).get("credit_type") == "service_outage"
+                            ):
+                                credit = await asyncio.to_thread(
+                                    apply_credit,
+                                    customer_id,
+                                    _service_credit_amount(service_context),
+                                    _service_credit_reason(outage),
+                                    policy_context=service_context,
+                                    applied_to_invoice=_latest_invoice_id(service_invoices),
+                                    db_path=db_path,
+                                )
+                                tool_results.append({
+                                    "tool_name": "apply_credit",
+                                    "ok": True,
+                                    "summary": f"credit {credit.get('credit_id')} applied for verified outage",
+                                    "result": credit,
+                                })
+                            elif validation.action == "handoff_human":
+                                dag_forced_handoff_reason = str(
+                                    (validation.action_args or {}).get("reason")
+                                    or "service_credit_manual_review"
+                                )
+                        except Exception:
+                            dag_result = None
 
-            if "router_issue" in intents:
+            if (
+                ("refund_request" in intents or "plan_change" in intents)
+                and _tool_result(tool_results, "get_invoice_history") is None
+            ):
+                invoices = await asyncio.to_thread(get_invoice_history, customer_id, months=12, db_path=db_path)
+                tool_results.append({
+                    "tool_name": "get_invoice_history",
+                    "ok": True,
+                    "summary": f"{len(invoices)} invoices loaded",
+                    "result": {"invoices": invoices},
+                })
+
+            if _requires_refund_exception_review(message, intents):
+                refund_invoices = _tool_result(tool_results, "get_invoice_history")
+                if refund_invoices is None:
+                    invoices = await asyncio.to_thread(get_invoice_history, customer_id, months=12, db_path=db_path)
+                    refund_invoices = {"invoices": invoices}
+                    tool_results.append({
+                        "tool_name": "get_invoice_history",
+                        "ok": True,
+                        "summary": f"{len(invoices)} invoices loaded",
+                        "result": refund_invoices,
+                    })
+                try:
+                    refund_context = _refund_exception_dag_context(
+                        message,
+                        customer,
+                        refund_invoices,
+                    )
+                    validation = PolicyGraphValidator().run("refund_exception_dag", refund_context)
+                    dag_result = {
+                        "dag_name": validation.policy_name,
+                        "policy_status": "compliant",
+                        "action": validation.action or "none",
+                        "path": validation.path,
+                        "ujcs": validation.ujcs,
+                    }
+                    if validation.action == "create_ticket":
+                        ticket = await asyncio.to_thread(
+                            create_ticket,
+                            customer_id,
+                            "refund_review",
+                            priority="high",
+                            status="open",
+                            policy_name="refund_exception_dag",
+                            policy_context=refund_context,
+                            db_path=db_path,
+                        )
+                        tool_results.append({
+                            "tool_name": "create_ticket",
+                            "ok": True,
+                            "summary": f"refund review ticket {ticket.get('ticket_id')} opened",
+                            "result": ticket,
+                        })
+                    elif validation.action == "handoff_human":
+                        dag_forced_handoff_reason = str(
+                            (validation.action_args or {}).get("reason")
+                            or "refund_exception_manual_review"
+                        )
+                except Exception:
+                    pass
+
+            if "router_issue" in intents or _needs_router_diagnostic(message, chat_state, intents):
                 diagnostic = await asyncio.to_thread(run_router_diagnostic, customer_id, db_path=db_path)
                 tool_results.append({"tool_name": "run_router_diagnostic", "ok": True, "summary": str(
                     diagnostic.get("recommendation") or "diagnostic complete"), "result": diagnostic})
+                if _needs_router_diagnostic(message, chat_state, intents):
+                    dag_forced_handoff_reason = dag_forced_handoff_reason or "repeated_outage_loop"
 
             if backend_intent == "cancellation_confirmation":
-                cancellation_request = await asyncio.to_thread(_create_cancellation_request, customer_id, message, db_path)
+                cancellation_request = await asyncio.to_thread(
+                    _create_cancellation_request,
+                    customer_id,
+                    message,
+                    db_path,
+                    normalized_session_id,
+                )
                 tool_results.append({
                     "tool_name": "create_cancellation_request",
                     "ok": True,
@@ -251,6 +508,48 @@ def chat_message_stream(
                         "summary": _retention_offer_summary(retention_offer),
                         "result": retention_offer,
                     })
+                try:
+                    retention_context = _cancellation_retention_dag_context(
+                        customer,
+                        subscription,
+                        pending_credits,
+                        intents,
+                    )
+                    validation = PolicyGraphValidator().run(
+                        "cancellation_retention_dag", retention_context)
+                    if dag_result is None or dag_result.get("dag_name") == "dynamic_agent_path":
+                        dag_result = {
+                            "dag_name": validation.policy_name,
+                            "policy_status": "compliant",
+                            "action": validation.action or "none",
+                            "path": validation.path,
+                            "ujcs": validation.ujcs,
+                        }
+                    if validation.action == "create_ticket":
+                        ticket = await asyncio.to_thread(
+                            create_ticket,
+                            customer_id,
+                            "retention_unresolved_issue",
+                            priority="high",
+                            status="escalated",
+                            policy_name="cancellation_retention_dag",
+                            policy_context=retention_context,
+                            db_path=db_path,
+                        )
+                        tool_results.append({
+                            "tool_name": "create_ticket",
+                            "ok": True,
+                            "summary": f"retention ticket {ticket.get('ticket_id')} opened",
+                            "result": ticket,
+                        })
+                        dag_forced_handoff_reason = "cancellation_retention_required"
+                    elif validation.action == "handoff_human":
+                        dag_forced_handoff_reason = str(
+                            (validation.action_args or {}).get("reason")
+                            or "cancellation_retention_required"
+                        )
+                except Exception:
+                    pass
                 _mark_cancellation_pending(chat_state, intents, pending_credits)
         except Exception:
             tool_results.append({
@@ -263,16 +562,27 @@ def chat_message_stream(
         # Bind every successful tool result to a tamper-evident evidence receipt.
         receipts = _attach_receipts(message, tool_results)
         yield _event("tools", "done", {"tools": tool_results, "receipts": receipts})
+        stage_timings["tools"] = (time.perf_counter() - tools_started) * 1000
 
         # 5. DAG (Policy Validation)
+        dag_started = time.perf_counter()
         yield _event("dag", "running")
-        # In a fully dynamic system, this step would be driven by the ReAct loop determining the next action.
-        # We will just pass a generic compliant status for now to let the LLM decide.
-        dag = {"dag_name": "dynamic_agent_path", "policy_status": "compliant",
-               "action": "none", "path": intents, "ujcs": 0.86 if tool_results else 0.0}
+        # Intents with a pure tool-derived decision tree (currently: duplicate-charge
+        # refund review) run the real PolicyGraphValidator above and land in dag_result.
+        # Everything else still falls back to this generic status until the ReAct loop
+        # drives DAG selection for every intent.
+        dag = dag_result or {
+            "dag_name": "dynamic_agent_path",
+            "policy_status": "compliant",
+            "action": "none",
+            "path": intents,
+            "ujcs": 0.86 if tool_results else 0.0,
+        }
         yield _event("dag", "done", dag)
+        stage_timings["dag"] = (time.perf_counter() - dag_started) * 1000
 
         # 6. Response
+        response_started = time.perf_counter()
         yield _event("response", "running")
 
         # Trust metadata (Cleanlab/tau2-bench). Template-driven branches are
@@ -288,8 +598,15 @@ def chat_message_stream(
             if llm is None:
                 return _evidence_response(customer, intents, emotion, tool_results), 0.9, "deterministic", []
             try:
+                # gemini-2.5-flash spends an unpredictable share of
+                # max_output_tokens on internal reasoning before emitting
+                # visible text -- the default 1024 budget can get starved
+                # mid-sentence, producing a draft that LOOKS complete enough to
+                # pass the trust check but is actually truncated.
                 draft = (await asyncio.to_thread(
-                    llm.generate, base_prompt, response_mime_type="text/plain", temperature=0.7)).strip()
+                    llm.generate, base_prompt, response_mime_type="text/plain",
+                    temperature=0.7 if llm_temperature is None else llm_temperature,
+                    max_output_tokens=2048)).strip()
             except Exception:
                 return _evidence_response(customer, intents, emotion, tool_results), 0.9, "fallback", []
             score, issues = await asyncio.to_thread(_action_trust_score, draft, tool_results, classifier_llm)
@@ -298,7 +615,8 @@ def chat_message_stream(
             try:
                 revised = (await asyncio.to_thread(
                     llm.generate, _revision_prompt(base_prompt, draft, issues),
-                    response_mime_type="text/plain", temperature=0.4)).strip()
+                    response_mime_type="text/plain", temperature=0.4,
+                    max_output_tokens=2048)).strip()
                 rscore, rissues = await asyncio.to_thread(_action_trust_score, revised, tool_results, classifier_llm)
             except Exception:
                 revised, rscore, rissues = "", 0.0, issues
@@ -311,7 +629,9 @@ def chat_message_stream(
         if backend_intent == "greeting" and chat_state.get("active_flow") == "cancellation":
             final_text = _active_flow_greeting_response(customer, chat_state)
         elif backend_intent == "abort_cancellation":
-            _abort_cancellation(chat_state, customer_id, db_path)
+            await asyncio.to_thread(
+                _abort_cancellation, chat_state, customer_id, normalized_session_id, db_path
+            )
             name = _first_name(customer)
             final_text = f"Okay {name}, I have stopped the cancellation process. Your service will remain active. Let me know if there's anything else I can help with!"
         elif backend_intent == "cancellation_confirmation":
@@ -347,35 +667,158 @@ def chat_message_stream(
         # (anger persists, health collapses, low model confidence after revision,
         # or an explicit ask), surface an escalation with a ready-to-read context
         # summary for the human agent instead of letting the bot grind on.
-        health_score = _health_score_for(emotion, intents)
-        handoff = _maybe_build_handoff(
-            customer, message, emotion, intents, tool_results, health_score, chat_state,
-            force=force_handoff,
-            force_reason="low model confidence after self-revision" if force_handoff else None)
+        #
+        # Everything from here through the telemetry write is wrapped: an
+        # exception anywhere in this tail (handoff building, localization,
+        # session-state save) must not skip the telemetry row or leave the
+        # stream without a terminal event -- it would otherwise silently
+        # undercount exactly the turns most worth measuring (the failing ones)
+        # and leave the frontend stuck waiting past its watchdog.
+        health_score = _health_score_for(
+            emotion,
+            intents,
+            customer=customer,
+            message=message,
+            chat_state=chat_state,
+            tool_results=tool_results,
+            policy_results=policy_results,
+            intent_confidence=intent_confidence,
+        )
+        handoff = None
+        handoff_summary = None
+        records_synced = False
+        try:
+            handoff = _maybe_build_handoff(
+                customer, message, emotion, intents, tool_results, health_score, chat_state,
+                force=force_handoff or bool(dag_forced_handoff_reason),
+                force_reason=dag_forced_handoff_reason
+                or ("low model confidence after self-revision" if force_handoff else None))
+            if handoff and handoff.get("should_handoff"):
+                try:
+                    await asyncio.to_thread(
+                        _sync_live_conversation_records,
+                        customer_id=customer_id,
+                        session_id=normalized_session_id,
+                        message=message,
+                        final_text=final_text,
+                        intents=intents,
+                        tool_results=tool_results,
+                        policy_results=policy_results,
+                        dag=dag,
+                        health_score=health_score,
+                        relationship_start=_relationship_start(customer),
+                        relationship_end=_relationship_end(customer, intents, emotion),
+                        handoff_required=True,
+                        db_path=db_path,
+                    )
+                    records_synced = True
+                    handoff_summary = await asyncio.to_thread(
+                        generate_handoff_summary,
+                        normalized_session_id,
+                        handoff_reason=handoff.get("reason") or "conversation health at risk",
+                        db_path=db_path,
+                    )
+                    if handoff_summary:
+                        if isinstance(handoff_summary.get("context_card"), dict):
+                            handoff["context_card"] = handoff_summary["context_card"]
+                        tool_results.append({
+                            "tool_name": "generate_handoff_summary",
+                            "ok": True,
+                            "summary": f"handoff summary {handoff_summary.get('handoff_summary_id')} generated",
+                            "result": handoff_summary,
+                        })
+                except Exception:
+                    handoff_summary = None
+                # Without this, the customer sees a "connecting you to a
+                # specialist" message but no row is ever written to
+                # human_handoff_queue -- the agent-desk console has nothing to
+                # show for a real live escalation. Never let this break the
+                # customer-facing reply if the audit-side write fails.
+                try:
+                    await asyncio.to_thread(
+                        _record_handoff_to_queue,
+                        customer_id=customer_id,
+                        session_id=normalized_session_id,
+                        handoff=handoff,
+                        db_path=db_path,
+                    )
+                except Exception:
+                    pass
+            if (handoff and handoff.get("should_handoff")
+                    and "explicit_request" in handoff.get("trigger_codes", [])
+                    and not tool_results):
+                # An explicit "get me a human" with no other findings to report:
+                # the generic clarifying filler would contradict the handoff banner
+                # (asking "how can I help" while also announcing an escalation), so
+                # lead with the handoff acknowledgment instead.
+                final_text = handoff["customer_message"]
 
-        # Feature: multi-language. Localize the final reply into the customer's
-        # preferred language (English replies are left untouched). Runs AFTER the
-        # overclaim/evidence guards so safety checks operate on the English text.
-        final_text = await asyncio.to_thread(_localize_response, final_text, customer, llm)
+            # Feature: multi-language. Localize the final reply into the customer's
+            # preferred language (English replies are left untouched). Runs AFTER the
+            # overclaim/evidence guards so safety checks operate on the English text.
+            final_text, response_language_code = await asyncio.to_thread(
+                _localize_response, final_text, customer, llm)
 
-        # Update chat history
-        chat_history = chat_state.setdefault("history", [])
-        chat_history.append({"role": "user", "content": message})
-        chat_history.append({"role": "assistant", "content": final_text})
-        chat_state["history"] = chat_history[-10:]
+            # Update chat history
+            chat_history = chat_state.setdefault("history", [])
+            chat_history.append({"role": "user", "content": message})
+            chat_history.append({"role": "assistant", "content": final_text})
+            chat_state["history"] = chat_history[-10:]
+            if not records_synced:
+                await asyncio.to_thread(
+                    _sync_live_conversation_records,
+                    customer_id=customer_id,
+                    session_id=normalized_session_id,
+                    message=message,
+                    final_text=final_text,
+                    intents=intents,
+                    tool_results=tool_results,
+                    policy_results=policy_results,
+                    dag=dag,
+                    health_score=health_score,
+                    relationship_start=_relationship_start(customer),
+                    relationship_end=_relationship_end(customer, intents, emotion),
+                    handoff_required=bool(handoff and handoff.get("should_handoff")),
+                    db_path=db_path,
+                )
 
-        # Persist the updated session so multi-turn context survives a restart.
-        _save_session_state(customer_id, chat_state, db_path)
+            # Persist the updated session so multi-turn context survives a restart.
+            async with state_lock:
+                state_snapshot = _snapshot_chat_state(chat_state)
+                await asyncio.to_thread(
+                    _save_session_state, customer_id, normalized_session_id, state_snapshot, db_path
+                )
+        except Exception:
+            response_language_code = "en"
+            async with state_lock:
+                state_snapshot = _snapshot_chat_state(chat_state)
+
+        stage_timings["response"] = (time.perf_counter() - response_started) * 1000
+        try:
+            await asyncio.to_thread(
+                _record_turn_telemetry,
+                db_path=db_path,
+                customer_id=customer_id,
+                session_id=normalized_session_id,
+                turn_count=int(chat_state.get("turn_count", 0)),
+                latency_ms=(time.perf_counter() - turn_started) * 1000,
+                input_tokens=_rough_token_count(message),
+                output_tokens=_rough_token_count(final_text),
+                stage_breakdown=stage_timings,
+            )
+        except Exception:
+            pass
 
         yield _event("response", "done", {
             "text": final_text,
+            "session_id": normalized_session_id,
             "health_score": health_score,
             "relationship_start": _relationship_start(customer),
             "relationship_end": _relationship_end(customer, intents, emotion),
             "acknowledgment": generate_acknowledgment(issue_queue),
             "emotion": emotion,
             "empathy_mode": _empathy_mode_for(emotion, _relationship_start(customer)),
-            "language": _language_name(_preferred_language(customer)),
+            "language": _language_name(response_language_code),
             "handoff": handoff,
             "trust": {
                 "score": trust_score,
@@ -384,10 +827,162 @@ def chat_message_stream(
                 "threshold": _TRUST_THRESHOLD,
             },
             "verified_claims": _verified_claims(tool_results),
-            "conversation_state": chat_state,
+            "conversation_state": state_snapshot,
+            "llm_temperature": llm_temperature,
+            "handoff_summary": handoff_summary,
         })
 
-    return StreamingResponse(generate(), media_type="text/event-stream")
+    return StreamingResponse(generate_unlocked(), media_type="text/event-stream")
+
+
+@router.get("/session/messages")
+def chat_session_messages(
+    request: Request,
+    customer_id: str = Query(..., min_length=1),
+    session_id: str = Query("default", min_length=1),
+) -> dict[str, Any]:
+    """Return persisted chat history for a customer/session pair."""
+    db_path = Path(request.app.state.db_path)
+    state = _load_session_state(customer_id, session_id, db_path)
+    history = state.get("history") if isinstance(state, dict) else []
+    messages = history if isinstance(history, list) else []
+    messages = [*messages, *_load_proactive_customer_messages(customer_id, db_path)]
+    return {
+        "customer_id": customer_id,
+        "session_id": _normalize_session_id(session_id),
+        "messages": messages,
+    }
+
+
+def append_human_reply_to_session(
+    *,
+    customer_id: str,
+    session_id: str,
+    message: str,
+    agent_name: str,
+    db_path: Path,
+) -> dict[str, Any]:
+    normalized_customer_id = " ".join(customer_id.strip().split())
+    normalized_session_id = _normalize_session_id(session_id)
+    normalized_message = " ".join(message.strip().split())
+    normalized_agent = " ".join(agent_name.strip().split()) or "Human specialist"
+    if not normalized_customer_id:
+        raise ValueError("customer_id must not be empty")
+    if not normalized_message:
+        raise ValueError("message must not be empty")
+
+    state = _load_session_state(normalized_customer_id, normalized_session_id, db_path)
+    history = state.setdefault("history", [])
+    if not isinstance(history, list):
+        history = []
+    reply = {
+        "role": "human_agent",
+        "agent_name": normalized_agent,
+        "content": normalized_message,
+        "timestamp": _now_iso(),
+    }
+    for existing in history:
+        if (
+            isinstance(existing, dict)
+            and existing.get("role") == "human_agent"
+            and existing.get("agent_name") == normalized_agent
+            and " ".join(str(existing.get("content", "")).strip().split()) == normalized_message
+        ):
+            return existing
+    history.append(reply)
+    state["history"] = history[-20:]
+    _save_session_state(normalized_customer_id, normalized_session_id, state, db_path)
+    return reply
+
+
+def _load_proactive_customer_messages(customer_id: str, db_path: Path) -> list[dict[str, Any]]:
+    normalized_customer_id = " ".join(customer_id.strip().split())
+    if not normalized_customer_id:
+        return []
+    with sqlite3.connect(db_path) as connection:
+        connection.row_factory = sqlite3.Row
+        rows = connection.execute(
+            """
+            SELECT session_id, messages
+            FROM conversations
+            WHERE customer_id = ?
+              AND session_id LIKE 'proactive-%'
+            ORDER BY datetime(created_at) ASC, session_id ASC
+            """,
+            (normalized_customer_id,),
+        ).fetchall()
+    proactive_messages: list[dict[str, Any]] = []
+    for row in rows:
+        try:
+            messages = json.loads(row["messages"])
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(messages, list):
+            continue
+        for message in messages:
+            if not isinstance(message, dict) or not message.get("proactive"):
+                continue
+            proactive_messages.append({
+                **message,
+                "role": "agent",
+                "source_session_id": row["session_id"],
+            })
+    return proactive_messages
+
+
+def _record_turn_telemetry(
+    *,
+    db_path: Path,
+    customer_id: str,
+    session_id: str,
+    turn_count: int,
+    latency_ms: float,
+    input_tokens: int,
+    output_tokens: int,
+    stage_breakdown: dict[str, float],
+) -> None:
+    telemetry_id = hashlib.sha256(
+        f"{customer_id}|{session_id}|{turn_count}|{time.time_ns()}".encode("utf-8")
+    ).hexdigest()[:16]
+    with sqlite3.connect(db_path) as connection:
+        connection.execute(
+            """
+            INSERT INTO telemetry (
+                telemetry_id,
+                session_id,
+                customer_id,
+                turn_count,
+                latency_ms,
+                input_tokens,
+                output_tokens,
+                total_tokens,
+                stage_breakdown,
+                created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                telemetry_id,
+                session_id,
+                customer_id,
+                max(0, turn_count),
+                max(0.0, latency_ms),
+                input_tokens,
+                output_tokens,
+                input_tokens + output_tokens,
+                json.dumps({
+                    stage: round(max(0.0, duration), 1)
+                    for stage, duration in stage_breakdown.items()
+                }, ensure_ascii=True),
+                _now_iso(),
+            ),
+        )
+
+
+def _rough_token_count(text: str) -> int:
+    normalized = " ".join(str(text).split())
+    if not normalized:
+        return 0
+    return max(1, round(len(normalized) / 4))
 
 
 def _safe_llm_client() -> LLMClient | None:
@@ -423,7 +1018,18 @@ def _effective_emotion(message: str, classifier_emotion: str) -> str:
     text = message.lower()
     anger_terms = ("angry", "ridiculous", "unacceptable",
                    "furious", "useless", "terrible", "hate")
+    repeat_complaint_terms = ("third time", "again and again", "keep calling",
+                              "every time i call", "still waiting", "how many times")
     if any(term in text for term in anger_terms):
+        return "angry"
+    if any(term in text for term in repeat_complaint_terms):
+        return "angry"
+    # Shouting (long runs of caps) and stacked exclamation marks are strong
+    # anger signals that literal keyword matching on lowercased text misses.
+    letters = [c for c in message if c.isalpha()]
+    if len(letters) >= 8 and sum(1 for c in letters if c.isupper()) / len(letters) > 0.7:
+        return "angry"
+    if message.count("!") >= 2:
         return "angry"
     return classifier_emotion
 
@@ -433,6 +1039,146 @@ def _duplicate_summary(duplicate: dict[str, Any]) -> str:
     if duplicate.get("duplicate_confirmed") and amount:
         return f"duplicate found INR {float(amount):g}"
     return "no confirmed duplicate"
+
+
+def _duplicate_charge_dag_context(duplicate: dict[str, Any]) -> dict[str, Any]:
+    """Map check_duplicate_charge's result onto duplicate_charge_refund_dag's node fields."""
+    timestamps = duplicate.get("payment_timestamps") or []
+    if timestamps:
+        reference_date = date.fromisoformat(os.environ.get("RESOLVEFLOW_NOW", "2026-06-01")[:10])
+        earliest_date = min(date.fromisoformat(str(ts)[:10]) for ts in timestamps)
+        payment_age_days = max(0, (reference_date - earliest_date).days)
+    else:
+        payment_age_days = 9999
+    return {
+        "check_duplicate_charge": {"duplicate_confirmed": bool(duplicate.get("duplicate_confirmed"))},
+        "get_invoice_history": {"single_matching_invoice": bool(duplicate.get("single_matching_invoice"))},
+        "payment_age_days": payment_age_days,
+        "duplicate_amount": float(duplicate.get("duplicate_amount") or 0),
+    }
+
+
+def _wants_service_credit(message: str, intents: list[str]) -> bool:
+    text = message.lower()
+    return (
+        "service_outage" in intents
+        and (
+            "refund_request" in intents
+            or "credit" in text
+            or "eligible" in text
+            or "refund" in text
+        )
+    )
+
+
+def _service_credit_dag_context(
+    outage: dict[str, Any],
+    customer_id: str,
+    db_path: Path,
+) -> dict[str, Any]:
+    """Map outage evidence and prior credits onto service_credit_dag fields."""
+    return {
+        "check_outage_status": {
+            "verified": bool(outage.get("verified")),
+            "duration_hours": float(outage.get("duration_hours") or 0),
+        },
+        "get_invoice_history": {
+            "credit_this_cycle": _has_service_credit_this_cycle(customer_id, db_path),
+        },
+    }
+
+
+def _has_service_credit_this_cycle(customer_id: str, db_path: Path) -> bool:
+    reference_date = os.environ.get("RESOLVEFLOW_NOW", "2026-06-01")[:10]
+    with sqlite3.connect(db_path) as connection:
+        row = connection.execute(
+            """
+            SELECT 1
+            FROM credits
+            WHERE customer_id = ?
+              AND date(applied_at) >= date(?, 'start of month')
+              AND (
+                lower(reason) LIKE '%outage%'
+                OR lower(reason) LIKE '%service credit%'
+                OR policy_id = 'service_credit_dag'
+              )
+            LIMIT 1
+            """,
+            (customer_id, reference_date),
+        ).fetchone()
+    return row is not None
+
+
+def _service_credit_amount(policy_context: dict[str, Any]) -> float:
+    outage = policy_context.get("check_outage_status", {})
+    duration_hours = float(outage.get("duration_hours") or 0)
+    if bool(outage.get("verified")) and duration_hours >= 6:
+        return 500.0
+    return 100.0
+
+
+def _service_credit_reason(outage: dict[str, Any]) -> str:
+    outage_id = outage.get("outage_id") or "verified outage"
+    duration = float(outage.get("duration_hours") or 0)
+    if duration:
+        return f"Verified outage {outage_id} lasted {duration:g} hours."
+    return f"Service outage credit for {outage_id}."
+
+
+def _latest_invoice_id(invoice_payload: dict[str, Any] | None) -> str | None:
+    invoices = (invoice_payload or {}).get("invoices") or []
+    if not invoices:
+        return None
+    invoice_id = invoices[0].get("invoice_id") if isinstance(invoices[0], dict) else None
+    return str(invoice_id) if invoice_id else None
+
+
+def _tool_result(tool_results: list[dict[str, Any]], tool_name: str) -> dict[str, Any] | None:
+    for result in reversed(tool_results):
+        if result.get("tool_name") == tool_name and isinstance(result.get("result"), dict):
+            return result["result"]
+    return None
+
+
+def _requires_refund_exception_review(message: str, intents: list[str]) -> bool:
+    text = " ".join(message.lower().split())
+    if "refund_request" not in intents and "refund" not in text:
+        return False
+    if "duplicate_charge" in intents:
+        return False
+    amount = _refund_amount_from_text(text)
+    stale_terms = ("more than a month", "older than 30", "early may", "april", "last month")
+    return (amount is not None and amount > 500) or any(term in text for term in stale_terms)
+
+
+def _refund_exception_dag_context(
+    message: str,
+    customer: dict[str, Any] | None,
+    invoice_payload: dict[str, Any] | None,
+) -> dict[str, Any]:
+    text = " ".join(message.lower().split())
+    amount = _refund_amount_from_text(text)
+    invoices = (invoice_payload or {}).get("invoices") or []
+    if amount is None and invoices and isinstance(invoices[0], dict):
+        amount = float(invoices[0].get("amount") or 0)
+    stale_terms = ("more than a month", "older than 30", "early may", "april", "last month")
+    payment_age_days = 999 if any(term in text for term in stale_terms) else 0
+    return {
+        "refund_reason_eligible": "refund" in text,
+        "payment_ownership_verified": bool((customer or {}).get("customer_id")),
+        "payment_age_days": payment_age_days,
+        "refund_amount": float(amount or 0),
+    }
+
+
+def _refund_amount_from_text(text: str) -> float | None:
+    match = re.search(r"(?:inr|rs\.?|₹)\s*([0-9]+(?:\.[0-9]+)?)", text, flags=re.IGNORECASE)
+    if match:
+        return float(match.group(1))
+    match = re.search(r"\b([0-9]{3,6})(?:\s*rupees)?\b", text, flags=re.IGNORECASE)
+    if match:
+        return float(match.group(1))
+    return None
 
 
 def _outage_summary(outage: dict[str, Any]) -> str:
@@ -463,11 +1209,22 @@ def _replay_summary(replay) -> str:
     return "eligible; no prior matching action found"
 
 
-def _state_for(customer_id: str) -> dict[str, Any]:
+def _normalize_session_id(session_id: str | None) -> str:
+    normalized = " ".join(str(session_id or "default").strip().split())
+    return normalized or "default"
+
+
+def _state_key(customer_id: str, session_id: str | None) -> _ChatStateKey:
+    return customer_id, _normalize_session_id(session_id)
+
+
+def _state_for(customer_id: str, session_id: str = "default") -> dict[str, Any]:
+    key = _state_key(customer_id, session_id)
     return _CHAT_STATES.setdefault(
-        customer_id,
+        key,
         {
             "customer_id": customer_id,
+            "session_id": key[1],
             "active_flow": "none",
             "last_confirmed_intent": None,
             "pending_customer_choice": None,
@@ -483,6 +1240,26 @@ def _state_for(customer_id: str) -> dict[str, Any]:
             "history": [],
         },
     )
+
+
+def _chat_state_lock(customer_id: str, session_id: str = "default") -> asyncio.Lock:
+    key = _state_key(customer_id, session_id)
+    loop = asyncio.get_running_loop()
+    with _CHAT_STATE_LOCKS_GUARD:
+        entry = _CHAT_STATE_LOCKS.get(key)
+        if entry is None or entry[0] is not loop:
+            lock = asyncio.Lock()
+            _CHAT_STATE_LOCKS[key] = (loop, lock)
+            return lock
+        return entry[1]
+
+
+def _snapshot_chat_state(state: dict[str, Any]) -> dict[str, Any]:
+    try:
+        snapshot = copy.deepcopy(state)
+    except Exception:  # noqa: BLE001 - never expose the shared live state.
+        snapshot = json.loads(json.dumps(state, ensure_ascii=True, default=str))
+    return snapshot if isinstance(snapshot, dict) else {}
 
 
 # Live chat state is persisted to a dedicated table (created lazily so the core
@@ -501,26 +1278,63 @@ def _future_date(days: int) -> str:
 
 
 def _ensure_chat_state_table(connection: sqlite3.Connection) -> None:
+    existing_columns = connection.execute(
+        f"PRAGMA table_info({_CHAT_STATE_TABLE})"
+    ).fetchall()
+    if existing_columns and not any(row[1] == "session_id" for row in existing_columns):
+        old_rows = connection.execute(
+            f"SELECT customer_id, state_json, updated_at FROM {_CHAT_STATE_TABLE}"
+        ).fetchall()
+        connection.execute(f"DROP TABLE {_CHAT_STATE_TABLE}")
+        _create_chat_state_table(connection)
+        connection.executemany(
+            f"""
+            INSERT OR REPLACE INTO {_CHAT_STATE_TABLE}
+                (customer_id, session_id, state_json, updated_at)
+            VALUES (?, 'default', ?, ?)
+            """,
+            old_rows,
+        )
+        return
+    if existing_columns:
+        connection.execute(
+            f"""
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_{_CHAT_STATE_TABLE}_customer_session
+            ON {_CHAT_STATE_TABLE}(customer_id, session_id)
+            """
+        )
+        return
+    _create_chat_state_table(connection)
+
+
+def _create_chat_state_table(connection: sqlite3.Connection) -> None:
     connection.execute(
         f"""
         CREATE TABLE IF NOT EXISTS {_CHAT_STATE_TABLE} (
-            customer_id TEXT PRIMARY KEY,
+            customer_id TEXT NOT NULL,
+            session_id  TEXT NOT NULL,
             state_json  TEXT NOT NULL,
-            updated_at  TEXT NOT NULL
+            updated_at  TEXT NOT NULL,
+            PRIMARY KEY (customer_id, session_id)
         )
         """
     )
 
 
-def _read_state_row(customer_id: str, db_path: Path | None) -> dict[str, Any] | None:
+def _read_state_row(customer_id: str, session_id: str, db_path: Path | None) -> dict[str, Any] | None:
     if not db_path:
         return None
+    normalized_session_id = _normalize_session_id(session_id)
     try:
         with sqlite3.connect(db_path) as connection:
             _ensure_chat_state_table(connection)
             row = connection.execute(
-                f"SELECT state_json FROM {_CHAT_STATE_TABLE} WHERE customer_id = ?",
-                (customer_id,),
+                f"""
+                SELECT state_json
+                FROM {_CHAT_STATE_TABLE}
+                WHERE customer_id = ? AND session_id = ?
+                """,
+                (customer_id, normalized_session_id),
             ).fetchone()
         if not row:
             return None
@@ -530,25 +1344,35 @@ def _read_state_row(customer_id: str, db_path: Path | None) -> dict[str, Any] | 
         return None
 
 
-def _load_session_state(customer_id: str, db_path: Path | None) -> dict[str, Any]:
+def _load_session_state(customer_id: str, session_id: str, db_path: Path | None) -> dict[str, Any]:
     """Return the live chat state, hydrating from the database on a cache miss.
 
     Within a process the in-memory cache is authoritative (we write through after
     every turn). After a restart the cache is empty, so the stored row is loaded
     back so the agent still knows what was already handled.
     """
-    if customer_id in _CHAT_STATES:
-        return _CHAT_STATES[customer_id]
-    state = _state_for(customer_id)  # creates and caches the default
-    stored = _read_state_row(customer_id, db_path)
+    key = _state_key(customer_id, session_id)
+    if key in _CHAT_STATES:
+        return _CHAT_STATES[key]
+    state = _state_for(customer_id, key[1])  # creates and caches the default
+    stored = _read_state_row(customer_id, key[1], db_path)
     if stored:
         state.update(stored)
+        state["customer_id"] = customer_id
+        state["session_id"] = key[1]
     return state
 
 
-def _save_session_state(customer_id: str, state: dict[str, Any], db_path: Path | None) -> None:
+def _save_session_state(
+    customer_id: str,
+    session_id: str,
+    state: dict[str, Any],
+    db_path: Path | None,
+) -> None:
     if not db_path:
         return
+    normalized_session_id = _normalize_session_id(session_id)
+    state = {**state, "customer_id": customer_id, "session_id": normalized_session_id}
     try:
         payload = json.dumps(state, ensure_ascii=True, default=str)
     except (TypeError, ValueError):
@@ -558,13 +1382,14 @@ def _save_session_state(customer_id: str, state: dict[str, Any], db_path: Path |
             _ensure_chat_state_table(connection)
             connection.execute(
                 f"""
-                INSERT INTO {_CHAT_STATE_TABLE} (customer_id, state_json, updated_at)
-                VALUES (?, ?, ?)
-                ON CONFLICT(customer_id) DO UPDATE SET
+                INSERT INTO {_CHAT_STATE_TABLE}
+                    (customer_id, session_id, state_json, updated_at)
+                VALUES (?, ?, ?, ?)
+                ON CONFLICT(customer_id, session_id) DO UPDATE SET
                     state_json = excluded.state_json,
                     updated_at = excluded.updated_at
                 """,
-                (customer_id, payload, _now_iso()),
+                (customer_id, normalized_session_id, payload, _now_iso()),
             )
     except (sqlite3.Error, OSError):
         return
@@ -587,6 +1412,83 @@ _CANCEL_TERMS = (
 def _has_cancellation_signal(message: str) -> bool:
     text = " ".join(message.strip().lower().split())
     return any(term in text for term in _CANCEL_TERMS)
+
+
+def _has_outage_signal(message: str) -> bool:
+    text = " ".join(message.strip().lower().split())
+    if "downgrade" in text:
+        return False
+    phrases = (
+        "offline",
+        "internet down",
+        "internet is down",
+        "net down",
+        "service down",
+        "outage",
+        "downtime",
+        "not working",
+        "no internet",
+    )
+    return any(phrase in text for phrase in phrases)
+
+
+def _has_payment_problem_signal(message: str) -> bool:
+    text = " ".join(message.strip().lower().split())
+    phrases = (
+        "charged",
+        "billing",
+        "bill",
+        "invoice",
+        "pay later",
+        "payment",
+        "keep charging",
+        "charges",
+    )
+    return any(phrase in text for phrase in phrases)
+
+
+def _has_refund_signal(message: str) -> bool:
+    text = " ".join(message.strip().lower().split())
+    phrases = (
+        "refund",
+        "credit my bill",
+        "credit",
+        "charged twice",
+        "duplicate charge",
+        "extra charges",
+    )
+    return any(phrase in text for phrase in phrases)
+
+
+def _has_human_or_fix_signal(message: str) -> bool:
+    text = " ".join(message.strip().lower().split())
+    phrases = ("specialist", "human", "agent", "fix", "resolve", "review")
+    return any(phrase in text for phrase in phrases)
+
+
+def _needs_router_diagnostic(
+    message: str,
+    chat_state: dict[str, Any],
+    intents: list[str],
+) -> bool:
+    text = " ".join(message.strip().lower().split())
+    if "router_issue" in intents:
+        return True
+    if "service_outage" not in intents:
+        return False
+    history = chat_state.get("history")
+    prior_customer_turns = [
+        str(item.get("content", "")).lower()
+        for item in history
+        if isinstance(item, dict) and item.get("role") == "user"
+    ] if isinstance(history, list) else []
+    repeated_not_working = text.count("not working") >= 2
+    prior_outage_mentions = sum(
+        1
+        for turn in prior_customer_turns
+        if "not working" in turn or "internet" in turn or "outage" in turn
+    )
+    return repeated_not_working or prior_outage_mentions >= 1
 
 
 def _normalize_chat_intent(message: str, state: dict[str, Any]) -> str | None:
@@ -646,7 +1548,12 @@ def _mark_cancellation_pending(state: dict[str, Any], intents: list[str], pendin
     )
 
 
-def _abort_cancellation(state: dict[str, Any], customer_id: str | None = None, db_path: Path | None = None) -> None:
+def _abort_cancellation(
+    state: dict[str, Any],
+    customer_id: str | None = None,
+    session_id: str = "default",
+    db_path: Path | None = None,
+) -> None:
     state.update({
         "active_flow": "none",
         "pending_customer_choice": None,
@@ -658,7 +1565,7 @@ def _abort_cancellation(state: dict[str, Any], customer_id: str | None = None, d
     # (and the customer's real status) self-heals when they decide to stay.
     _restore_active_account(customer_id, db_path)
     if customer_id:
-        _MEMORY_CANCELLATION_REQUESTS.pop(customer_id, None)
+        _MEMORY_CANCELLATION_REQUESTS.pop(_state_key(customer_id, session_id), None)
 
 
 def _restore_active_account(customer_id: str | None, db_path: Path | None) -> None:
@@ -751,6 +1658,36 @@ def _get_cancellation_policy(customer: dict[str, Any] | None, subscription: dict
     }
 
 
+def _cancellation_retention_dag_context(
+    customer: dict[str, Any] | None,
+    subscription: dict[str, Any],
+    pending_credits: dict[str, Any],
+    intents: list[str],
+) -> dict[str, Any]:
+    account_status = str(subscription.get("subscription_status") or (customer or {}).get("account_status") or "")
+    issue_intents = {
+        "service_outage",
+        "router_issue",
+        "billing_dispute",
+        "duplicate_charge",
+        "refund_request",
+        "technician_request",
+    }
+    has_open_issue = (
+        account_status == "pending_cancellation"
+        or bool(issue_intents & set(intents))
+        or float(pending_credits.get("pending_credit_amount") or 0) > 0
+        or bool(pending_credits.get("duplicate_charge_refund_pending"))
+    )
+    return {
+        "lookup_customer": {
+            "identity_verified": bool((customer or {}).get("customer_id") or subscription.get("found")),
+        },
+        "has_open_issue": has_open_issue,
+        "churn_score": float((customer or {}).get("churn_score") or 0),
+    }
+
+
 def _check_pending_credits(customer_id: str, customer: dict[str, Any] | None, db_path: Path) -> dict[str, Any]:
     duplicate = check_duplicate_charge(customer_id, db_path=db_path)
     outage = None
@@ -792,10 +1729,25 @@ def _check_pending_credits(customer_id: str, customer: dict[str, Any] | None, db
     }
 
 
-def _create_cancellation_request(customer_id: str, reason: str, db_path: Path) -> dict[str, Any]:
+def _create_cancellation_request(
+    customer_id: str,
+    reason: str,
+    db_path: Path,
+    session_id: str = "default",
+) -> dict[str, Any]:
     try:
-        with sqlite3.connect(db_path) as connection:
+        with sqlite3.connect(db_path, timeout=30.0) as connection:
+            connection.execute("PRAGMA foreign_keys = ON")
+            connection.execute("PRAGMA busy_timeout = 30000")
             connection.row_factory = sqlite3.Row
+            connection.execute("BEGIN IMMEDIATE")
+            customer = connection.execute(
+                "SELECT customer_id FROM customers WHERE customer_id = ?",
+                (customer_id,),
+            ).fetchone()
+            if customer is None:
+                raise ValueError(f"customer {customer_id!r} not found")
+
             existing = connection.execute(
                 """
                 SELECT ticket_id, status, created_at
@@ -808,46 +1760,52 @@ def _create_cancellation_request(customer_id: str, reason: str, db_path: Path) -
                 """,
                 (customer_id,),
             ).fetchone()
-        if existing is not None:
-            ticket_id = str(existing["ticket_id"])
-            return {
-                "mode": "already_taken",
-                "customer_id": customer_id,
-                "ticket_id": ticket_id,
-                "cancellation_request_id": _cancellation_id(ticket_id),
-                "status": existing["status"],
-                "service_active_until": _future_date(4),
-                "pending_credit_preserved": True,
-            }
+            if existing is not None:
+                ticket_id = str(existing["ticket_id"])
+                return {
+                    "mode": "already_taken",
+                    "customer_id": customer_id,
+                    "ticket_id": ticket_id,
+                    "cancellation_request_id": _cancellation_id(ticket_id),
+                    "status": existing["status"],
+                    "service_active_until": _future_date(4),
+                    "pending_credit_preserved": True,
+                }
 
-        ticket = create_ticket(
-            customer_id,
-            "cancellation_request",
-            priority="high",
-            status="open",
-            db_path=db_path,
-        )
-        with sqlite3.connect(db_path) as connection:
+            ticket_id = f"TKT-{uuid4().hex[:12].upper()}"
+            created_at = _now_iso()
+            connection.execute(
+                """
+                INSERT INTO tickets(ticket_id, customer_id, issue_type, status, priority, created_at)
+                VALUES (?, ?, 'cancellation_request', 'open', 'high', ?)
+                """,
+                (ticket_id, customer_id, created_at),
+            )
             connection.execute(
                 "UPDATE customers SET account_status = 'pending_cancellation' WHERE customer_id = ?",
                 (customer_id,),
             )
-        return {
-            "mode": "created",
-            "customer_id": customer_id,
-            "ticket_id": ticket["ticket_id"],
-            "cancellation_request_id": _cancellation_id(ticket["ticket_id"]),
-            "status": "created",
-            "reason": reason,
-            "service_active_until": "2026-07-04",
-            "pending_credit_preserved": True,
-        }
+            return {
+                "mode": "created",
+                "customer_id": customer_id,
+                "ticket_id": ticket_id,
+                "cancellation_request_id": _cancellation_id(ticket_id),
+                "status": "created",
+                "reason": reason,
+                "service_active_until": _future_date(4),
+                "pending_credit_preserved": True,
+            }
     except sqlite3.Error:
-        return _create_memory_cancellation_request(customer_id, reason)
+        return _create_memory_cancellation_request(customer_id, reason, session_id)
 
 
-def _create_memory_cancellation_request(customer_id: str, reason: str) -> dict[str, Any]:
-    existing = _MEMORY_CANCELLATION_REQUESTS.get(customer_id)
+def _create_memory_cancellation_request(
+    customer_id: str,
+    reason: str,
+    session_id: str = "default",
+) -> dict[str, Any]:
+    key = _state_key(customer_id, session_id)
+    existing = _MEMORY_CANCELLATION_REQUESTS.get(key)
     if existing is not None:
         return {"mode": "already_taken", **existing}
     ticket_id = f"TKT-MEM-{len(_MEMORY_CANCELLATION_REQUESTS) + 1:04d}"
@@ -861,7 +1819,7 @@ def _create_memory_cancellation_request(customer_id: str, reason: str) -> dict[s
         "pending_credit_preserved": True,
         "persistence": "memory_fallback",
     }
-    _MEMORY_CANCELLATION_REQUESTS[customer_id] = request
+    _MEMORY_CANCELLATION_REQUESTS[key] = request
     return {"mode": "created", **request}
 
 
@@ -1159,19 +2117,38 @@ def _already_addressed_response(
 
 def _evidence_response(customer: dict[str, Any] | None, intents: list[str], emotion: str, tools: list[dict[str, Any]]) -> str:
     name = _first_name(customer)
+    if not tools:
+        # No tool evidence means no specific issue has been identified yet
+        # (a greeting, a vague "can you help", or general chit-chat) -- talking
+        # about "verified evidence" here would be a non-sequitur, so just ask
+        # what the customer needs instead of narrating an empty evidence trail.
+        # plan_change and technician_request have no tool wired up yet, so they
+        # also land here -- acknowledge the specific ask instead of a blank
+        # greeting that reads as if the message was never parsed.
+        if "plan_change" in intents:
+            return f"Got it, {name} - tell me which plan you're interested in (or your budget) and I'll check what's available."
+        if "technician_request" in intents:
+            return f"Got it, {name} - I can arrange a technician visit. What day and time works best for you?"
+        if emotion == "angry":
+            return f"{name}, I hear you're frustrated. Tell me what's going on and I'll get it sorted."
+        return f"Hi {name}, how can I help you today?"
     by_name = {str(tool.get("tool_name")): tool for tool in tools}
     duplicate = (by_name.get("check_duplicate_charge")
                  or {}).get("result") or {}
     outage = (by_name.get("check_outage_status") or {}).get("result") or {}
     replay = (by_name.get("apply_credit_guard") or {}).get("result") or {}
+    diagnostic = (by_name.get("run_router_diagnostic") or {}).get("result") or {}
 
     parts = []
     if emotion == "angry":
         parts.append(
             f"{name}, I hear how frustrating this is. I will use the evidence already on the account instead of making you repeat everything.")
-    elif emotion == "frustrated" or _relationship_start(customer) < 40:
+    elif emotion == "frustrated":
         parts.append(
             f"{name}, I can see this has taken more effort than it should. I will keep this focused and verify each issue before actioning it.")
+    elif _relationship_start(customer) < 40:
+        parts.append(
+            f"{name}, I know your experience with us hasn't always been smooth, so I'll keep this simple and verify each issue before actioning it.")
     else:
         parts.append(
             f"{name}, I checked your account and the verified support evidence.")
@@ -1184,6 +2161,19 @@ def _evidence_response(customer: dict[str, Any] | None, intents: list[str], emot
         duration = float(outage.get("duration_hours") or 0)
         parts.append(
             f"There is also a verified outage in {outage.get('location')} lasting {duration:g} hours.")
+    diagnostic_ran = "run_router_diagnostic" in by_name
+    if diagnostic_ran and diagnostic.get("diagnostic_available"):
+        if diagnostic.get("diagnostic_failure"):
+            parts.append(
+                f"The router diagnostic confirms a real fault: {diagnostic.get('router_status')} "
+                f"status, signal strength {diagnostic.get('signal_strength')}. {diagnostic.get('recommendation') or ''}".strip())
+        else:
+            parts.append(
+                f"The router diagnostic came back {diagnostic.get('router_status') or 'normal'} "
+                f"with signal strength {diagnostic.get('signal_strength')}, so the fault is likely elsewhere. "
+                f"{diagnostic.get('recommendation') or ''}".strip())
+    elif diagnostic_ran and diagnostic.get("recommendation"):
+        parts.append(diagnostic["recommendation"])
     if "cancellation_intent" in intents:
         parts.append(
             "I will keep the cancellation request queued while the billing and service issues are handled first.")
@@ -1195,7 +2185,7 @@ def _evidence_response(customer: dict[str, Any] | None, intents: list[str], emot
     elif duplicate.get("duplicate_confirmed") or outage.get("verified"):
         parts.append(
             "The next action is ready for the policy gate; I will not claim it is complete until the tool action confirms it.")
-    else:
+    elif not diagnostic_ran:
         parts.append(
             "I do not have enough verified evidence to take an account action yet, so the next step is clarification or a safe diagnostic.")
     return " ".join(parts)
@@ -1363,6 +2353,19 @@ def _verified_claims(tool_results: list[dict[str, Any]]) -> list[dict[str, Any]]
 _TRUST_THRESHOLD = 0.6
 
 
+def _clean_numbers_for_prompt(value: Any) -> Any:
+    """Whole-number floats (1199.0) print with a trailing .0 in Python's repr,
+    and the LLM copies that literal into its reply (e.g. "INR 1199.0"). Strip
+    it before the evidence goes into the prompt so replies read naturally."""
+    if isinstance(value, float):
+        return int(value) if value.is_integer() else value
+    if isinstance(value, dict):
+        return {key: _clean_numbers_for_prompt(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_clean_numbers_for_prompt(item) for item in value]
+    return value
+
+
 def _build_response_prompt(
     message: str,
     customer: dict[str, Any] | None,
@@ -1376,12 +2379,14 @@ def _build_response_prompt(
         for turn in chat_state["history"][-6:]:
             history_text += f"{turn['role'].capitalize()}: {turn['content']}\n"
         history_text += "\n"
+    clean_customer = _clean_numbers_for_prompt(customer)
+    clean_tool_results = _clean_numbers_for_prompt(tool_results)
     return (
         f"You are a helpful telecom support agent.\n"
         f"{history_text}"
         f"Customer Message: '{message}'\n"
-        f"Customer Context: {customer}\n"
-        f"Tool Results: {tool_results}\n"
+        f"Customer Context: {clean_customer}\n"
+        f"Tool Results: {clean_tool_results}\n"
         f"Policies Retrieved: {[p['policy_id'] for p in policy_results]}\n\n"
         f"{_session_context_note(chat_state)}"
         "Write a very short, friendly, evidence-grounded final response to the customer (maximum 2 sentences). "
@@ -1410,16 +2415,26 @@ def _cove_verify(text: str, tool_results: list[dict[str, Any]], verifier: LLMCli
         "factual claim or commitment in the reply is supported by the evidence.\n"
         "A reply that only states verified facts, asks a question, or says an action "
         "is queued/eligible (without claiming it is done) is SUPPORTED.\n"
-        "A reply that promises a refund/credit was applied, or invents amounts/IDs/"
-        "facts not in the evidence, is NOT supported.\n"
+        "If the tool evidence shows an action (credit, refund, ticket) was ALREADY "
+        "taken before this conversation (e.g. an 'already_taken'/'already applied' "
+        "field is true), then the reply stating that fact is SUPPORTED -- this is "
+        "reporting a pre-existing record, not promising a new action.\n"
+        "A reply that promises a NEW refund/credit will be applied when the evidence "
+        "does not show one was requested or authorized in this turn, or that invents "
+        "amounts/IDs/facts not in the evidence, is NOT supported.\n"
         f"TOOL EVIDENCE: {json.dumps(evidence, ensure_ascii=True, default=str)}\n"
         f"DRAFT REPLY: {text}\n"
         'Return ONLY JSON: {"supported": true/false, "unsupported_claims": ["..."]}'
     )
     try:
+        # Same thinking-token headroom issue as elsewhere in this file: a JSON
+        # response truncated mid-object raises JSONDecodeError below, which is
+        # swallowed by the except clause and silently disables the self-check
+        # (always "supported"), so this needs the same generous budget already
+        # applied to intent classification and translation.
         raw = verifier.generate(
             prompt, response_mime_type="application/json",
-            temperature=0.0, max_output_tokens=512)
+            temperature=0.0, max_output_tokens=2048)
         payload = json.loads(raw)
         supported = bool(payload.get("supported", True))
         claims = [str(c) for c in payload.get("unsupported_claims", []) if str(c).strip()]
@@ -1486,16 +2501,22 @@ def _language_name(code: str) -> str:
     return _LANGUAGE_NAMES.get(code, code.upper() or "English")
 
 
-def _localize_response(text: str, customer: dict[str, Any] | None, llm: LLMClient | None) -> str:
+def _localize_response(
+    text: str, customer: dict[str, Any] | None, llm: LLMClient | None
+) -> tuple[str, str]:
     """Translate the final reply into the customer's preferred language.
 
     English customers (and any case where the LLM is unavailable or fails) keep
     the original English text, so the deterministic safety guards that ran on the
     English version are never bypassed. Names, IDs and amounts are preserved.
+
+    Returns ``(text, language_code)`` where ``language_code`` reflects the
+    language the returned text is actually in -- not just the customer's
+    preference -- so the UI never labels an untranslated fallback as translated.
     """
     code = _preferred_language(customer)
     if code == "en" or not text.strip() or llm is None:
-        return text
+        return text, "en"
     language = _language_name(code)
     prompt = (
         f"Translate the following customer-support reply into {language}. "
@@ -1506,12 +2527,19 @@ def _localize_response(text: str, customer: dict[str, Any] | None, llm: LLMClien
         f"Reply: {text}"
     )
     try:
+        # gemini-2.5-flash is a thinking model: it spends an unpredictable share
+        # of max_output_tokens on internal reasoning before emitting visible
+        # text (observed 1000-1500+ thinking tokens on a routine translation,
+        # enough to blow past even a 4096 budget on some runs). Translation
+        # gains nothing from chain-of-thought, so disable it outright rather
+        # than trying to out-budget an unpredictable thinking phase.
         translated = llm.generate(
-            prompt, response_mime_type="text/plain", temperature=0.2)
+            prompt, response_mime_type="text/plain", temperature=0.2,
+            max_output_tokens=2048, thinking_budget=0)
         translated = translated.strip()
-        return translated or text
     except Exception:
-        return text
+        return text, "en"
+    return (translated, code) if translated else (text, "en")
 
 
 def _maybe_build_handoff(
@@ -1611,6 +2639,271 @@ def _maybe_build_handoff(
     }
 
 
+def _sync_live_conversation_records(
+    *,
+    customer_id: str,
+    session_id: str,
+    message: str,
+    final_text: str,
+    intents: list[str],
+    tool_results: list[dict[str, Any]],
+    policy_results: list[dict[str, Any]],
+    dag: dict[str, Any],
+    health_score: float,
+    relationship_start: int,
+    relationship_end: int,
+    handoff_required: bool,
+    db_path: Path,
+) -> str:
+    case_id = f"case-{session_id}"
+    now = _now_iso()
+    relationship_delta = relationship_end - relationship_start
+    messages = [
+        {"role": "user", "content": message, "timestamp": now},
+        {"role": "assistant", "content": final_text, "timestamp": now},
+    ]
+    tools_payload = _live_tool_payload(tool_results)
+    evidence_payload = _live_evidence_payload(tool_results, policy_results)
+    actions_payload = _live_action_payload(tool_results)
+    policy_path = [str(node) for node in (dag.get("path") or [])]
+    ujcs = dag.get("ujcs")
+    policy_status = _live_policy_status(dag, handoff_required)
+    final_status = "escalated" if handoff_required else "active"
+    slots = {"customer_id": customer_id, "session_id": session_id}
+
+    with sqlite3.connect(db_path) as connection:
+        connection.execute("PRAGMA foreign_keys = ON")
+        connection.row_factory = sqlite3.Row
+        existing = connection.execute(
+            "SELECT messages, health_scores FROM conversations WHERE session_id = ?",
+            (session_id,),
+        ).fetchone()
+        existing_messages = _json_loads(existing["messages"], []) if existing else []
+        existing_health = _json_loads(existing["health_scores"], []) if existing else []
+        merged_messages = [*existing_messages, *messages]
+        merged_health = [*existing_health, {"score": health_score, "timestamp": now}]
+
+        connection.execute(
+            """
+            INSERT INTO conversations(
+                session_id,
+                customer_id,
+                messages,
+                intents,
+                slots,
+                tools_called,
+                health_scores,
+                final_status,
+                relationship_score_start,
+                relationship_score_end,
+                relationship_delta,
+                completed_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(session_id) DO UPDATE SET
+                customer_id = excluded.customer_id,
+                messages = excluded.messages,
+                intents = excluded.intents,
+                slots = excluded.slots,
+                tools_called = excluded.tools_called,
+                health_scores = excluded.health_scores,
+                final_status = excluded.final_status,
+                relationship_score_start = excluded.relationship_score_start,
+                relationship_score_end = excluded.relationship_score_end,
+                relationship_delta = excluded.relationship_delta,
+                completed_at = excluded.completed_at
+            """,
+            (
+                session_id,
+                customer_id,
+                json.dumps(merged_messages, ensure_ascii=True, default=str),
+                json.dumps(list(dict.fromkeys(intents)), ensure_ascii=True),
+                json.dumps(slots, ensure_ascii=True),
+                json.dumps(tools_payload, ensure_ascii=True, default=str),
+                json.dumps(merged_health, ensure_ascii=True, default=str),
+                final_status,
+                relationship_start,
+                relationship_end,
+                relationship_delta,
+                now if final_status != "active" else None,
+            ),
+        )
+        connection.execute(
+            """
+            INSERT INTO audit_logs(
+                case_id,
+                customer_id,
+                session_id,
+                tools_called,
+                evidence_used,
+                action_taken,
+                policy_dag_path,
+                ujcs,
+                policy_status,
+                health_score,
+                handoff_required,
+                created_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(case_id) DO UPDATE SET
+                customer_id = excluded.customer_id,
+                session_id = excluded.session_id,
+                tools_called = excluded.tools_called,
+                evidence_used = excluded.evidence_used,
+                action_taken = excluded.action_taken,
+                policy_dag_path = excluded.policy_dag_path,
+                ujcs = excluded.ujcs,
+                policy_status = excluded.policy_status,
+                health_score = excluded.health_score,
+                handoff_required = excluded.handoff_required
+            """,
+            (
+                case_id,
+                customer_id,
+                session_id,
+                json.dumps(tools_payload, ensure_ascii=True, default=str),
+                json.dumps(evidence_payload, ensure_ascii=True, default=str),
+                json.dumps(actions_payload, ensure_ascii=True, default=str),
+                json.dumps(policy_path, ensure_ascii=True),
+                float(ujcs) if isinstance(ujcs, (int, float)) else None,
+                policy_status,
+                health_score,
+                int(handoff_required),
+                now,
+            ),
+        )
+    return case_id
+
+
+def _json_loads(raw: Any, fallback: Any) -> Any:
+    try:
+        value = json.loads(raw) if isinstance(raw, str) else raw
+        return value if value is not None else fallback
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return fallback
+
+
+def _live_tool_payload(tool_results: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    payload = []
+    for tool in tool_results:
+        name = str(tool.get("tool_name") or "").strip()
+        if not name:
+            continue
+        payload.append({
+            "tool_name": name,
+            "name": name,
+            "ok": tool.get("ok", True),
+            "summary": tool.get("summary"),
+            "result": tool.get("result") or {},
+            "receipt_id": tool.get("receipt_id"),
+        })
+    return payload
+
+
+def _live_evidence_payload(
+    tool_results: list[dict[str, Any]],
+    policy_results: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    evidence = []
+    for tool in tool_results:
+        name = str(tool.get("tool_name") or "").strip()
+        if not name:
+            continue
+        evidence.append({
+            "source": name,
+            "summary": tool.get("summary"),
+            "result": tool.get("result") or {},
+            "receipt_id": tool.get("receipt_id"),
+        })
+    for policy in policy_results:
+        evidence.append({
+            "source": "retrieve_policy",
+            "policy_id": policy.get("policy_id"),
+            "policy_name": policy.get("policy_name"),
+            "confidence": policy.get("confidence"),
+        })
+    return evidence
+
+
+def _live_action_payload(tool_results: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    actions = []
+    for tool in tool_results:
+        name = str(tool.get("tool_name") or "")
+        result = tool.get("result") if isinstance(tool.get("result"), dict) else {}
+        if name == "apply_credit" and result.get("credit_id"):
+            actions.append({"action": "apply_credit", "credit_id": result["credit_id"]})
+        elif name == "create_ticket" and result.get("ticket_id"):
+            actions.append({"action": "create_ticket", "ticket_id": result["ticket_id"]})
+        elif name == "create_cancellation_request" and result:
+            actions.append({
+                "action": "create_cancellation_request",
+                "request_id": result.get("cancellation_request_id") or result.get("ticket_id"),
+            })
+        elif name == "generate_handoff_summary" and result.get("handoff_summary_id"):
+            actions.append({
+                "action": "generate_handoff_summary",
+                "handoff_summary_id": result["handoff_summary_id"],
+            })
+    return actions
+
+
+def _live_policy_status(dag: dict[str, Any], handoff_required: bool) -> str:
+    if handoff_required:
+        return "needs_review"
+    if dag.get("policy_status") in {"pending", "compliant", "non_compliant", "needs_review"}:
+        return str(dag["policy_status"])
+    ujcs = dag.get("ujcs")
+    if isinstance(ujcs, (int, float)) and ujcs >= 0.8:
+        return "compliant"
+    return "pending"
+
+
+def _ensure_case_records(connection: sqlite3.Connection, *, customer_id: str, session_id: str) -> str:
+    """Live chat has no case/audit trail by default; a handoff insert needs a
+    conversations row and an audit_logs row to already exist (both are
+    validated as foreign keys), so create them here if this is the session's
+    first escalation."""
+    case_id = f"case-{session_id}"
+    connection.execute(
+        "INSERT OR IGNORE INTO conversations(session_id, customer_id, messages) VALUES (?, ?, '[]')",
+        (session_id, customer_id),
+    )
+    connection.execute(
+        """
+        INSERT INTO audit_logs (case_id, customer_id, session_id)
+        VALUES (?, ?, ?)
+        ON CONFLICT(case_id) DO NOTHING
+        """,
+        (case_id, customer_id, session_id),
+    )
+    return case_id
+
+
+def _record_handoff_to_queue(
+    *, customer_id: str, session_id: str, handoff: dict[str, Any], db_path: Path
+) -> None:
+    with sqlite3.connect(db_path) as connection:
+        connection.execute("PRAGMA foreign_keys = ON")
+        case_id = _ensure_case_records(
+            connection, customer_id=customer_id, session_id=session_id)
+    queue_entry = insert_human_handoff_queue(
+        case_id=case_id,
+        customer_id=customer_id,
+        context_card=handoff.get("context_card") or {},
+        handoff_reason=handoff.get("reason") or "conversation health at risk",
+        db_path=db_path,
+    )
+    log_handoff_event_to_audit(
+        case_id=case_id,
+        customer_id=customer_id,
+        session_id=session_id,
+        queue_entry=queue_entry,
+        customer_message=handoff.get("customer_message"),
+        trigger_detection={"trigger_codes": handoff.get("trigger_codes") or []},
+        db_path=db_path,
+    )
+
+
 def _explicit_handoff_request(message: str) -> bool:
     text = " ".join(message.strip().lower().split())
     phrases = (
@@ -1626,7 +2919,56 @@ def _first_name(customer: dict[str, Any] | None) -> str:
     return str(customer.get("name") or customer.get("customer_name") or "there").split()[0]
 
 
-def _health_score_for(emotion: str, intents: list[str]) -> int:
+def _health_score_for(
+    emotion: str,
+    intents: list[str],
+    *,
+    customer: dict[str, Any] | None = None,
+    message: str = "",
+    chat_state: dict[str, Any] | None = None,
+    tool_results: list[dict[str, Any]] | None = None,
+    policy_results: list[dict[str, Any]] | None = None,
+    intent_confidence: float | None = None,
+) -> int:
+    try:
+        history = list((chat_state or {}).get("history") or [])
+        health = compute_health_score(
+            intent_confidence=max(0.0, min(1.0, float(intent_confidence or 0.0))),
+            missing_info_risk=missing_info_risk_component(
+                intents,
+                _health_slots(customer=customer, message=message),
+            ),
+            sentiment_score=sentiment_score_component(
+                [*history, {"role": "user", "content": message}]
+            ),
+            loop_penalty=loop_penalty_component(
+                [*history, {"role": "user", "content": message}]
+            ),
+            knowledge_coverage=knowledge_coverage_component(
+                tool_results or [],
+                [{"score": result.get("confidence")} for result in (policy_results or [])],
+            ),
+        )
+        return int(round(health.score))
+    except Exception:
+        return _fallback_health_score_for(emotion, intents)
+
+
+def _health_slots(*, customer: dict[str, Any] | None, message: str) -> dict[str, Any]:
+    slots: dict[str, Any] = {}
+    if customer:
+        slots["customer_id"] = customer.get("customer_id")
+        slots["location"] = customer.get("location")
+        slots["plan_id"] = customer.get("plan_id")
+    lowered = message.lower()
+    if any(term in lowered for term in ("this month", "latest", "current bill")):
+        slots["billing_period"] = "current"
+    if any(term in lowered for term in ("refund", "credit")):
+        slots["reason"] = message
+    return {key: value for key, value in slots.items() if value}
+
+
+def _fallback_health_score_for(emotion: str, intents: list[str]) -> int:
     score = 72
     if emotion in {"frustrated", "angry"}:
         score -= 18

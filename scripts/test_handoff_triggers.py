@@ -109,6 +109,40 @@ def assert_no_trigger_when_under_thresholds() -> None:
         raise AssertionError(f"highest severity should be empty: {detection.to_dict()}")
 
 
+def assert_timeout_status_triggers_tool_failure() -> None:
+    detection = detect_handoff_triggers(
+        tool_calls=[{"tool_name": "retrieve_policy", "status": "timeout"}],
+    )
+    if detection.trigger_codes != ["tool_failure"]:
+        raise AssertionError(f"timeout status should trigger tool failure: {detection.to_dict()}")
+    failed = detection.triggers[0].evidence["failed_tools"]
+    if failed != [{"name": "retrieve_policy", "status": "timeout", "error": None}]:
+        raise AssertionError(f"timeout failure evidence wrong: {detection.to_dict()}")
+
+
+def assert_plain_sentiment_string_triggers_anger() -> None:
+    detection = detect_handoff_triggers(
+        sentiment="angry",
+        user_message="Please fix this now.",
+    )
+    if detection.trigger_codes != ["anger"]:
+        raise AssertionError(f"plain runtime sentiment string should trigger anger: {detection.to_dict()}")
+    if detection.triggers[0].evidence["sentiment_label"] != "angry":
+        raise AssertionError(f"anger evidence should preserve string label: {detection.to_dict()}")
+
+
+def assert_whitespace_messages_do_not_crash_trigger_detection() -> None:
+    detection = detect_handoff_triggers(
+        messages=[
+            {"role": "user", "content": "   "},
+            {"role": "assistant", "content": "\n"},
+            {"role": "user", "content": "I am angry and this is terrible."},
+        ]
+    )
+    if "anger" not in detection.trigger_codes:
+        raise AssertionError(f"blank messages should be ignored, not crash detection: {detection.to_dict()}")
+
+
 def assert_validates_bad_inputs() -> None:
     bad_calls = (
         lambda: detect_handoff_triggers(health_score=-1),
@@ -131,6 +165,9 @@ def main() -> None:
     assert_detects_all_eight_handoff_triggers()
     assert_accepts_raw_runtime_artifacts()
     assert_no_trigger_when_under_thresholds()
+    assert_timeout_status_triggers_tool_failure()
+    assert_plain_sentiment_string_triggers_anger()
+    assert_whitespace_messages_do_not_crash_trigger_detection()
     assert_validates_bad_inputs()
     print("handoff trigger detection tests passed")
 

@@ -47,6 +47,22 @@ def customer_plan_id(db_path: Path, customer_id: str) -> str:
     return row[0]
 
 
+def customer_plan_state(db_path: Path, customer_id: str) -> dict:
+    with sqlite3.connect(db_path) as connection:
+        connection.row_factory = sqlite3.Row
+        row = connection.execute(
+            """
+            SELECT plan_id, pending_plan_id, pending_plan_effective_date, pending_plan_requested_at
+            FROM customers
+            WHERE customer_id = ?
+            """,
+            (customer_id,),
+        ).fetchone()
+    if row is None:
+        raise AssertionError(f"customer missing: {customer_id}")
+    return dict(row)
+
+
 def assert_changes_plan_after_policy_gate() -> None:
     db_path = build_seeded_customer_db()
     result = change_plan(
@@ -91,8 +107,15 @@ def assert_changes_plan_after_policy_gate() -> None:
         raise AssertionError(f"effective policy missing: {result}")
     if result["ujcs"] != round(6 / 8, 4):
         raise AssertionError(f"wrong UJCS: {result}")
-    if customer_plan_id(db_path, "CUST-1001") != "fiber_starter_100":
-        raise AssertionError("customer plan_id was not updated")
+    plan_state = customer_plan_state(db_path, "CUST-1001")
+    if plan_state["plan_id"] != "fiber_plus_200":
+        raise AssertionError(f"scheduled downgrade should not update active plan: {plan_state}")
+    if plan_state["pending_plan_id"] != "fiber_starter_100":
+        raise AssertionError(f"scheduled downgrade should persist pending plan: {plan_state}")
+    if plan_state["pending_plan_effective_date"] != "2026-06-01":
+        raise AssertionError(f"scheduled downgrade should persist effective date: {plan_state}")
+    if not plan_state["pending_plan_requested_at"]:
+        raise AssertionError(f"scheduled downgrade should persist request timestamp: {plan_state}")
 
 
 def assert_changes_lockin_downgrade_with_fee_disclosure() -> None:
@@ -115,6 +138,9 @@ def assert_changes_lockin_downgrade_with_fee_disclosure() -> None:
         raise AssertionError(f"current-plan cancellation fee should be disclosed: {result}")
     if result["policy_action_args"].get("fee_disclosure_required") is not True:
         raise AssertionError(f"policy args should include disclosure requirement: {result}")
+    plan_state = customer_plan_state(db_path, "CUST-1001")
+    if plan_state["plan_id"] != "fiber_plus_200" or plan_state["pending_plan_id"] != "fiber_starter_100":
+        raise AssertionError(f"lock-in downgrade should be scheduled, not active immediately: {plan_state}")
 
 
 def assert_blocks_when_policy_prerequisites_fail() -> None:
@@ -219,6 +245,13 @@ def assert_change_plan_api_endpoint() -> None:
             raise AssertionError(f"wrong tool envelope: {payload}")
         if payload["result"]["new_plan_id"] != "fiber_starter_100":
             raise AssertionError(f"endpoint plan result wrong: {payload}")
+        plan_state = customer_plan_state(db_path, "CUST-1001")
+        if plan_state["plan_id"] != "fiber_plus_200":
+            raise AssertionError(f"endpoint should not update active plan immediately: {plan_state}")
+        if plan_state["pending_plan_id"] != "fiber_starter_100":
+            raise AssertionError(f"endpoint should persist pending plan: {plan_state}")
+        if plan_state["pending_plan_effective_date"] != "2026-06-01":
+            raise AssertionError(f"endpoint should persist effective date: {plan_state}")
 
         blocked = client.post(
             "/api/tools/change_plan",

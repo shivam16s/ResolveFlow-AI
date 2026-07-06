@@ -62,6 +62,9 @@ async def lifespan(app: FastAPI):
             app.state.policy_store = None
             print(f"Policy ingestion failed: {e}")
     yield
+    manager = getattr(app.state, "memory_manager", None)
+    if manager is not None and hasattr(manager, "close"):
+        manager.close()
 
 
 API_TITLE = "ResolveFlow AI API"

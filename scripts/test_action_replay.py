@@ -10,7 +10,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from backend.agent import ActionCandidate, TakenAction, confirm_action_replay, load_taken_actions
+from backend.agent import ActionCandidate, TakenAction, confirm_action_replay, load_taken_actions  # noqa: E402
 
 
 class FakeLLM:
@@ -85,6 +85,38 @@ def test_llm_semantic_replay_when_target_differs() -> None:
     assert decision.confidence == 0.86
 
 
+def test_llm_semantic_replay_accepts_integer_float_index() -> None:
+    candidate = ActionCandidate(
+        action="apply_credit",
+        customer_id="CUST-1001",
+        target_id="INV-NEW",
+        amount=599,
+        reason="duplicate_charge_credit",
+    )
+    taken = [
+        TakenAction(
+            action="apply_credit",
+            customer_id="CUST-1001",
+            target_id="CR-OLD",
+            amount=250,
+            reason="billing adjustment",
+            source="credits",
+            summary="credit CR-OLD for billing adjustment",
+        )
+    ]
+
+    decision = confirm_action_replay(
+        "did you already process my refund?",
+        candidate,
+        taken,
+        llm_factory=lambda: FakeLLM({"same_action": True, "matched_index": 0.0, "confidence": 0.83, "reason": "same refund action"}),
+    )
+
+    assert decision.already_taken is True
+    assert decision.checked_with_llm is True
+    assert decision.matched_action is taken[0]
+
+
 def test_load_taken_actions_reads_credits() -> None:
     with TemporaryDirectory() as tmp:
         db_path = Path(tmp) / "actions.db"
@@ -135,5 +167,6 @@ def test_load_taken_actions_reads_credits() -> None:
 if __name__ == "__main__":
     test_deterministic_same_invoice_replay()
     test_llm_semantic_replay_when_target_differs()
+    test_llm_semantic_replay_accepts_integer_float_index()
     test_load_taken_actions_reads_credits()
     print("action replay tests passed")

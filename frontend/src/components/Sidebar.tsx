@@ -9,7 +9,9 @@ import {
   MessageSquareText,
   ChevronRight,
   Handshake,
+  Headphones,
   Home,
+  ShieldAlert,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 
@@ -18,7 +20,9 @@ const navItems = [
   { href: "/demo", label: "Conversation Cockpit", icon: MessageSquareText },
   { href: "/cases", label: "Cases", icon: FolderOpen },
   { href: "/audit", label: "Audit Trail", icon: Handshake },
+  { href: "/agent-desk", label: "Agent Desk", icon: Headphones },
   { href: "/rag", label: "Knowledge Base", icon: BrainCircuit },
+  { href: "/security", label: "Security Lab", icon: ShieldAlert },
   { href: "/evaluation", label: "Evaluation Lab", icon: FlaskConical },
 ];
 

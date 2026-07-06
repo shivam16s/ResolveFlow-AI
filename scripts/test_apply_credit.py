@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import sqlite3
 import sys
 import tempfile
@@ -84,13 +85,19 @@ def assert_applies_credit_after_policy_gate() -> None:
             """,
             (result["credit_id"],),
         ).fetchone()
+        policy_row = connection.execute(
+            "SELECT policy_id, policy_name FROM policies WHERE policy_id = ?",
+            ("service_credit_dag",),
+        ).fetchone()
 
     if row is None:
         raise AssertionError("credit was not inserted")
     if row["customer_id"] != "CUST-1001" or float(row["amount"]) != 300:
         raise AssertionError(f"stored credit wrong: {dict(row)}")
-    if row["policy_id"] is not None:
-        raise AssertionError(f"policy_id should stay null until policy rows are seeded: {dict(row)}")
+    if row["policy_id"] != "service_credit_dag":
+        raise AssertionError(f"authorizing policy_id should be persisted: {dict(row)}")
+    if policy_row is None or policy_row["policy_name"] != "service_credit_dag":
+        raise AssertionError(f"policy reference row missing: {policy_row}")
     if row["applied_to_invoice"] != "INV-8821":
         raise AssertionError(f"stored invoice link wrong: {dict(row)}")
 
@@ -173,6 +180,60 @@ def assert_applies_partial_credit_path() -> None:
         raise AssertionError(f"short outage should use partial credit path: {result}")
     if result["policy_action_args"].get("max_amount") != 100:
         raise AssertionError(f"partial credit cap wrong: {result}")
+
+
+def assert_repeated_credit_request_is_idempotent() -> None:
+    db_path = build_seeded_billing_db()
+    kwargs = {
+        "customer_id": "CUST-1001",
+        "amount": 300,
+        "reason": "Verified outage retry-safe credit",
+        "policy_context": VALID_SERVICE_CREDIT_CONTEXT,
+        "applied_to_invoice": "INV-8821",
+        "db_path": db_path,
+    }
+    first = apply_credit(**kwargs)
+    second = apply_credit(**kwargs)
+
+    if second["credit_id"] != first["credit_id"]:
+        raise AssertionError(f"retry should return existing credit id: first={first}, second={second}")
+    if second["applied_at"] != first["applied_at"]:
+        raise AssertionError(f"retry should preserve original applied_at: first={first}, second={second}")
+
+    with sqlite3.connect(db_path) as connection:
+        rows = connection.execute(
+            """
+            SELECT credit_id, amount, reason, applied_to_invoice
+            FROM credits
+            WHERE customer_id = ?
+            """,
+            ("CUST-1001",),
+        ).fetchall()
+    if len(rows) != 1:
+        raise AssertionError(f"repeated identical credit request inserted duplicates: {rows}")
+
+
+def assert_apply_credit_uses_demo_time_anchor() -> None:
+    db_path = build_seeded_billing_db()
+    previous = os.environ.get("RESOLVEFLOW_NOW")
+    os.environ["RESOLVEFLOW_NOW"] = "2026-05-24T10:30:00"
+    try:
+        result = apply_credit(
+            "CUST-1001",
+            300,
+            "Verified outage anchored credit",
+            policy_context=VALID_SERVICE_CREDIT_CONTEXT,
+            applied_to_invoice="INV-8821",
+            db_path=db_path,
+        )
+    finally:
+        if previous is None:
+            os.environ.pop("RESOLVEFLOW_NOW", None)
+        else:
+            os.environ["RESOLVEFLOW_NOW"] = previous
+
+    if result["applied_at"] != "2026-05-24T10:30:00":
+        raise AssertionError(f"credit should use RESOLVEFLOW_NOW anchor: {result}")
 
 
 def assert_validates_customer_invoice_and_inputs() -> None:
@@ -282,13 +343,50 @@ def assert_apply_credit_api_endpoint() -> None:
         raise AssertionError(f"missing context should return 422: {invalid.status_code} {invalid.text}")
 
 
+def assert_apply_credit_api_retry_does_not_double_credit() -> None:
+    db_path = build_seeded_billing_db()
+    client = TestClient(create_app(db_path=db_path))
+    payload = {
+        "customer_id": "CUST-1001",
+        "amount": 250,
+        "reason": "Verified outage retry-safe endpoint credit",
+        "policy_context": VALID_SERVICE_CREDIT_CONTEXT,
+        "applied_to_invoice": "INV-8821",
+    }
+
+    first = client.post("/api/tools/apply_credit", json=payload)
+    second = client.post("/api/tools/apply_credit", json=payload)
+    if first.status_code != 200 or second.status_code != 200:
+        raise AssertionError(f"endpoint retries should succeed: {first.status_code} {first.text}; {second.status_code} {second.text}")
+
+    first_result = first.json()["result"]
+    second_result = second.json()["result"]
+    if second_result["credit_id"] != first_result["credit_id"]:
+        raise AssertionError(f"endpoint retry should return existing credit: {first_result}, {second_result}")
+
+    with sqlite3.connect(db_path) as connection:
+        count = connection.execute(
+            """
+            SELECT COUNT(*)
+            FROM credits
+            WHERE customer_id = ? AND amount = ? AND reason = ? AND applied_to_invoice = ?
+            """,
+            ("CUST-1001", 250, payload["reason"], "INV-8821"),
+        ).fetchone()[0]
+    if count != 1:
+        raise AssertionError(f"endpoint retry inserted duplicate credits: {count}")
+
+
 def main() -> None:
     assert_applies_credit_after_policy_gate()
     assert_blocks_credits_when_policy_prerequisites_fail()
     assert_enforces_policy_amount_cap()
     assert_applies_partial_credit_path()
+    assert_repeated_credit_request_is_idempotent()
+    assert_apply_credit_uses_demo_time_anchor()
     assert_validates_customer_invoice_and_inputs()
     assert_apply_credit_api_endpoint()
+    assert_apply_credit_api_retry_does_not_double_credit()
     print("apply credit tests passed")
 
 

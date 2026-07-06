@@ -3,12 +3,14 @@ from __future__ import annotations
 import sys
 import tempfile
 from pathlib import Path
+from types import SimpleNamespace
 
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 from backend.evaluation import evaluate_policy_retrievals_with_ragas, run_evaluation  # noqa: E402
+from backend.evaluation.ragas import _answer_terms, _relevant_context_ranks, _score_retrieval  # noqa: E402
 
 
 def assert_scores_all_policy_retrievals_from_real_evaluation() -> None:
@@ -58,6 +60,62 @@ def assert_duplicate_charge_policy_has_grounded_evidence() -> None:
         raise AssertionError(f"duplicate evidence terms should be supported: {score}")
 
 
+def assert_context_precision_requires_more_than_one_shared_query_token() -> None:
+    weak_ranks = _relevant_context_ranks(
+        [
+            "Refund exceptions are routed to a manager queue.",
+            "Router diagnostics require signal checks before dispatch.",
+        ],
+        query="refund status",
+        answer_terms=["duplicate", "charge", "policy"],
+    )
+    if weak_ranks:
+        raise AssertionError(f"single shared query token should not mark context relevant: {weak_ranks}")
+
+    strong_ranks = _relevant_context_ranks(
+        ["Duplicate charge policy requires invoice and payment evidence."],
+        query="duplicate charge refund",
+        answer_terms=["duplicate", "charge", "policy"],
+    )
+    if strong_ranks != [1]:
+        raise AssertionError(f"grounded policy context should still be relevant: {strong_ranks}")
+
+
+def assert_context_recall_is_not_vacuously_perfect_without_answer_terms() -> None:
+    scenario = SimpleNamespace(
+        scenario_id="synthetic",
+        customer_messages=["hello"],
+        goal_state={"required_policies": [], "success_criteria": []},
+    )
+    score = _score_retrieval(
+        {"pass_index": 1},
+        scenario,
+        {"policy_id": "", "query": "hello", "evidence_strips": [{"text": "generic text"}]},
+    )
+    if score.context_recall != 0.0:
+        raise AssertionError(f"empty answer terms should not produce perfect recall: {score.to_dict()}")
+
+
+def assert_answer_terms_are_policy_specific() -> None:
+    scenario = SimpleNamespace(
+        goal_state={
+            "required_policies": ["duplicate_charge_policy", "refund_policy"],
+            "success_criteria": [
+                "Finds duplicate payments and duplicate invoice evidence.",
+                "Refund exception requests must be escalated.",
+            ],
+        }
+    )
+    duplicate_terms = set(_answer_terms(scenario, "duplicate_charge_policy"))
+    refund_terms = set(_answer_terms(scenario, "refund_policy"))
+    if "duplicate" not in duplicate_terms:
+        raise AssertionError(f"duplicate policy should include duplicate criteria terms: {duplicate_terms}")
+    if "duplicate" in refund_terms:
+        raise AssertionError(f"refund policy should not inherit duplicate criteria terms: {refund_terms}")
+    if "refund" not in refund_terms:
+        raise AssertionError(f"refund policy should keep refund-specific terms: {refund_terms}")
+
+
 def assert_ragas_layer_validates_bad_payloads() -> None:
     bad_payloads = (
         [],
@@ -77,6 +135,9 @@ def assert_ragas_layer_validates_bad_payloads() -> None:
 def main() -> None:
     assert_scores_all_policy_retrievals_from_real_evaluation()
     assert_duplicate_charge_policy_has_grounded_evidence()
+    assert_context_precision_requires_more_than_one_shared_query_token()
+    assert_context_recall_is_not_vacuously_perfect_without_answer_terms()
+    assert_answer_terms_are_policy_specific()
     assert_ragas_layer_validates_bad_payloads()
     print("ragas evaluation tests passed")
 

@@ -411,6 +411,70 @@ def assert_retry_stops_after_max_attempts() -> None:
         raise AssertionError("third instruction was accepted despite MAX_ATTEMPTS = 2")
 
 
+def assert_verification_tool_exception_leaves_retryable_failed_state() -> None:
+    def tool_crashes(customer_id: str) -> dict:
+        raise RuntimeError(f"diagnostic timeout for {customer_id}")
+
+    coordinator = GuidedActionCoordinator("router_reset", "CUST-1001")
+    coordinator.instruct()
+    verification = coordinator.handle_user_report(
+        "done",
+        tool_crashes,
+        tool_name="run_router_diagnostic",
+    )
+
+    if coordinator.state != GuidedActionState.FAILED:
+        raise AssertionError(f"tool exception should leave FAILED, not VERIFYING: {coordinator.to_dict()}")
+    if not coordinator.can_retry or coordinator.attempts_remaining != 1:
+        raise AssertionError(f"first tool exception should remain retryable: {coordinator.to_dict()}")
+    if verification.verified is not False:
+        raise AssertionError(f"crashed verification should not verify: {verification.to_dict()}")
+    if verification.tool_result.get("verification_error") is not True:
+        raise AssertionError(f"crashed tool result should be captured: {verification.to_dict()}")
+    if coordinator.transition_history[-1].to_state != GuidedActionState.FAILED:
+        raise AssertionError(f"crash should transition out of VERIFYING: {coordinator.to_dict()}")
+
+    retry = coordinator.instruct()
+    if retry.attempt_number != 2 or coordinator.state != GuidedActionState.WAITING:
+        raise AssertionError(f"retry after verifier crash should be allowed: {coordinator.to_dict()}")
+
+
+def assert_final_verification_exception_can_escalate() -> None:
+    handoff_calls = []
+
+    def tool_crashes(customer_id: str) -> dict:
+        raise TimeoutError(f"diagnostic timeout for {customer_id}")
+
+    def handoff_builder(**kwargs) -> dict:
+        handoff_calls.append(kwargs)
+        return {"handoff_id": "HND-CRASH", "status": "waiting"}
+
+    coordinator = GuidedActionCoordinator("router_reset", "CUST-1001")
+    coordinator.instruct()
+    coordinator.handle_user_report("done", tool_crashes, tool_name="run_router_diagnostic")
+    coordinator.instruct()
+    verification = coordinator.handle_user_report(
+        "done again",
+        tool_crashes,
+        tool_name="run_router_diagnostic",
+    )
+
+    if coordinator.state != GuidedActionState.FAILED:
+        raise AssertionError(f"final tool exception should leave FAILED: {coordinator.to_dict()}")
+    if coordinator.can_retry or coordinator.attempts_remaining != 0:
+        raise AssertionError(f"final tool exception should exhaust retry attempts: {coordinator.to_dict()}")
+    if verification.tool_result.get("error_type") != "TimeoutError":
+        raise AssertionError(f"timeout details should be preserved: {verification.to_dict()}")
+
+    handoff = coordinator.escalate_to_handoff(handoff_builder=handoff_builder)
+    if coordinator.state != GuidedActionState.ESCALATED or not coordinator.is_terminal:
+        raise AssertionError(f"final failed verifier should escalate cleanly: {coordinator.to_dict()}")
+    if handoff.handoff_result != {"handoff_id": "HND-CRASH", "status": "waiting"}:
+        raise AssertionError(f"handoff result missing: {handoff.to_dict()}")
+    if handoff_calls[0]["context_card"]["last_verification"]["tool_result"]["error_type"] != "TimeoutError":
+        raise AssertionError(f"handoff context should preserve verifier error: {handoff_calls}")
+
+
 def assert_escalates_failed_state_to_feature8_handoff() -> None:
     handoff_calls = []
 
@@ -563,6 +627,8 @@ def main() -> None:
     assert_handle_user_report_supports_custom_success_evaluator()
     assert_retry_uses_clearer_second_instruction()
     assert_retry_stops_after_max_attempts()
+    assert_verification_tool_exception_leaves_retryable_failed_state()
+    assert_final_verification_exception_can_escalate()
     assert_escalates_failed_state_to_feature8_handoff()
     assert_escalation_validates_inputs()
     assert_invalid_transitions_are_rejected()

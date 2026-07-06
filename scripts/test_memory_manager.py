@@ -4,18 +4,19 @@ from pathlib import Path
 import json
 import sqlite3
 import sys
+import tempfile
 
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-from backend.agent.memory_graph import get_memory_graph_node, list_memory_graph_nodes
-from backend.agent.memory_manager import (
+from backend.agent.memory_graph import get_memory_graph_node, list_memory_graph_nodes  # noqa: E402
+from backend.agent.memory_manager import (  # noqa: E402
     MemoryManager,
     build_memory_citation_context,
     format_memory_citation_context,
 )
-from backend.agent.memory_store import MemorySearchResult
+from backend.agent.memory_store import MemorySearchResult  # noqa: E402
 
 
 class FakeVectorStore:
@@ -128,6 +129,32 @@ class FakeLLM:
         return json.dumps({"triples": []})
 
 
+class PartiallyMalformedLLM(FakeLLM):
+    def __call__(self, prompt: str) -> str:
+        if "internet was down" in prompt.lower():
+            self.prompts.append(prompt)
+            return "not valid json"
+        return super().__call__(prompt)
+
+
+class PunctuationOnlyTripleLLM(FakeLLM):
+    def __call__(self, prompt: str) -> str:
+        self.prompts.append(prompt)
+        return json.dumps(
+            {
+                "triples": [
+                    {
+                        "subject": "!!!",
+                        "relation": "mentioned",
+                        "object": "...",
+                        "confidence": 0.8,
+                        "evidence": "malformed but valid JSON labels",
+                    }
+                ]
+            }
+        )
+
+
 def make_connection_with_conversation() -> sqlite3.Connection:
     connection = sqlite3.connect(":memory:")
     connection.execute("PRAGMA foreign_keys = ON")
@@ -222,6 +249,8 @@ def assert_indexes_session_at_close() -> None:
         raise AssertionError(f"expected atomic memory units from the transcript: {summary.to_dict()}")
     if summary.triples_indexed != 3:
         raise AssertionError(f"unexpected triple count: {summary.to_dict()}")
+    if summary.extraction_errors:
+        raise AssertionError(f"happy path should not report extraction errors: {summary.to_dict()}")
     if len(summary.memory_ids) != summary.units_indexed:
         raise AssertionError(f"memory ids must align to units: {summary.to_dict()}")
     if not summary.session_closed:
@@ -253,6 +282,84 @@ def assert_indexes_session_at_close() -> None:
         raise AssertionError(f"conversation close fields wrong: {row}")
     if (row[2], row[3], row[4]) != (61.76, 70.09, 8.33):
         raise AssertionError(f"relationship scores should persist on close: {row}")
+
+
+def assert_malformed_openie_does_not_strand_vector_writes() -> None:
+    connection = make_connection_with_conversation()
+    vector_store = FakeVectorStore()
+    llm = PartiallyMalformedLLM()
+    manager = MemoryManager(
+        vector_store=vector_store,
+        graph_connection=connection,
+        llm_client=llm,
+        synonymy_embedding_function=fake_synonymy_embeddings,
+    )
+
+    summary = manager.index_session(
+        customer_id="CUST-1001",
+        session_id="sess-001",
+        session_transcript=[
+            {
+                "role": "customer",
+                "content": "I was charged twice for invoice INV-8821.",
+            },
+            {
+                "role": "customer",
+                "content": "My internet was down in Chennai Zone 04.",
+            },
+        ],
+        final_status="resolved",
+    )
+
+    if len(vector_store.calls) != 1:
+        raise AssertionError("vector store should still receive all memory units")
+    if len(summary.memory_ids) != summary.units_indexed:
+        raise AssertionError(f"memory ids should remain aligned after OpenIE failure: {summary.to_dict()}")
+    if not summary.extraction_errors:
+        raise AssertionError(f"malformed OpenIE response should be reported: {summary.to_dict()}")
+    if summary.extraction_errors[0]["error_type"] != "ValueError":
+        raise AssertionError(f"OpenIE parse error details missing: {summary.to_dict()}")
+    if not summary.session_closed:
+        raise AssertionError(f"session should still close after partial OpenIE failure: {summary.to_dict()}")
+
+    duplicate_node = get_memory_graph_node(connection, "CUST-1001", "duplicate_charge")
+    if duplicate_node is None:
+        raise AssertionError("valid memory units should still update the graph")
+    internet_node = get_memory_graph_node(connection, "CUST-1001", "internet")
+    if internet_node is not None:
+        raise AssertionError(f"malformed OpenIE unit should not create graph nodes: {internet_node}")
+
+
+def assert_punctuation_only_triples_do_not_abort_indexing() -> None:
+    connection = make_connection_with_conversation()
+    vector_store = FakeVectorStore()
+    manager = MemoryManager(
+        vector_store=vector_store,
+        graph_connection=connection,
+        llm_client=PunctuationOnlyTripleLLM(),
+        synonymy_embedding_function=fake_synonymy_embeddings,
+    )
+
+    summary = manager.index_session(
+        customer_id="CUST-1001",
+        session_id="sess-001",
+        session_transcript=[
+            {
+                "role": "customer",
+                "content": "Please remember this odd note.",
+            }
+        ],
+        final_status="resolved",
+    )
+
+    if len(vector_store.calls) != 1:
+        raise AssertionError("vector writes should happen even when graph labels are unusable")
+    if summary.graph_nodes_upserted != 0 or summary.graph_edges_upserted != 0:
+        raise AssertionError(f"punctuation-only triples should be skipped by the graph: {summary.to_dict()}")
+    if summary.extraction_errors:
+        raise AssertionError(f"valid JSON with unusable labels should be skipped, not reported as extraction failure: {summary.to_dict()}")
+    if not summary.session_closed:
+        raise AssertionError(f"session should close after punctuation-only triples: {summary.to_dict()}")
 
 
 def assert_empty_session_closes_without_indexing() -> None:
@@ -442,12 +549,53 @@ def assert_rejects_bad_inputs() -> None:
         raise AssertionError("bad citation max_items was accepted")
 
 
+def assert_manager_closes_only_owned_graph_connection() -> None:
+    db_path = Path(tempfile.mkdtemp(prefix="resolveflow-memory-close-")) / "resolveflow.db"
+    manager = MemoryManager(
+        vector_store=FakeVectorStore(),
+        db_path=db_path,
+        llm_client=FakeLLM(),
+        synonymy_embedding_function=fake_synonymy_embeddings,
+    )
+    manager.close()
+    manager.close()
+
+    try:
+        manager.graph_connection.execute("SELECT 1")
+    except sqlite3.ProgrammingError:
+        pass
+    else:
+        raise AssertionError("owned graph connection should close with the manager")
+
+    try:
+        manager.retrieve(customer_id="CUST-1001", query="duplicate charge")
+    except RuntimeError:
+        pass
+    else:
+        raise AssertionError("closed manager should reject new operations")
+
+    injected_connection = sqlite3.connect(":memory:")
+    scoped = MemoryManager(
+        vector_store=FakeVectorStore(),
+        graph_connection=injected_connection,
+        llm_client=FakeLLM(),
+        synonymy_embedding_function=fake_synonymy_embeddings,
+    )
+    with scoped:
+        pass
+    injected_connection.execute("SELECT 1")
+    injected_connection.close()
+
+
 def main() -> None:
     assert_indexes_session_at_close()
+    assert_malformed_openie_does_not_strand_vector_writes()
+    assert_punctuation_only_triples_do_not_abort_indexing()
     assert_empty_session_closes_without_indexing()
     assert_retrieve_merges_vector_and_graph_results()
     assert_builds_memory_citation_context()
     assert_rejects_bad_inputs()
+    assert_manager_closes_only_owned_graph_connection()
     print("memory manager tests passed")
 
 

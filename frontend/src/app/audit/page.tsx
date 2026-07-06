@@ -7,16 +7,10 @@ import { GlassPanel, PageHeader, SectionLabel, StatusPill } from "@/components/B
 import { api } from "@/lib/api";
 import type { AuditLogEntry, CaseListResponse } from "@/lib/types";
 
-const auditLinks = [
-  { label: "Timeline", icon: ListChecks },
-  { label: "Compliance", icon: ShieldCheck },
-  { label: "Export", icon: FileDown },
-];
-
 export default function AuditHandoffPage() {
   const { data: cases } = useSWR<CaseListResponse>("audit-cases", () => api.cases.list(1, 10));
   const selected = cases?.cases?.[0];
-  const selectedId = selected?.route_id ?? selected?.case_id ?? "";
+  const selectedId = selected?.case_id ?? selected?.route_id ?? "";
   const { data: audit } = useSWR<AuditLogEntry>(selectedId ? ["audit-root", selectedId] : null, () => api.cases.auditLog(selectedId));
 
   return (
@@ -65,15 +59,54 @@ export default function AuditHandoffPage() {
             </div>
           </div>
           <div className="mt-4 grid gap-3 md:grid-cols-3">
-            {auditLinks.map(({ label, icon: Icon }) => (
-              <Link key={label} href={selectedId ? `/cases/${encodeURIComponent(selectedId)}` : "/cases"} className="rounded-lg p-3 text-sm font-semibold" style={{ background: "var(--surface-3)", border: "1px solid var(--border)", color: "var(--text-primary)" }}>
-                <Icon size={16} style={{ color: "#5eead4" }} />
-                <span className="mt-2 block">{label}</span>
-              </Link>
-            ))}
+            <Link href={selectedId ? `/cases/${encodeURIComponent(selectedId)}` : "/cases"} className="rounded-lg p-3 text-sm font-semibold" style={{ background: "var(--surface-3)", border: "1px solid var(--border)", color: "var(--text-primary)" }}>
+              <ListChecks size={16} style={{ color: "#5eead4" }} />
+              <span className="mt-2 block">Open Case</span>
+            </Link>
+            <button type="button" disabled={!audit} onClick={() => exportAudit("json", audit, selectedId)} className="rounded-lg p-3 text-left text-sm font-semibold disabled:opacity-40" style={{ background: "var(--surface-3)", border: "1px solid var(--border)", color: "var(--text-primary)" }}>
+              <FileDown size={16} style={{ color: "#5eead4" }} />
+              <span className="mt-2 block">Export JSON</span>
+            </button>
+            <button type="button" disabled={!audit} onClick={() => exportAudit("csv", audit, selectedId)} className="rounded-lg p-3 text-left text-sm font-semibold disabled:opacity-40" style={{ background: "var(--surface-3)", border: "1px solid var(--border)", color: "var(--text-primary)" }}>
+              <ShieldCheck size={16} style={{ color: "#5eead4" }} />
+              <span className="mt-2 block">Export CSV</span>
+            </button>
           </div>
         </GlassPanel>
       </div>
     </div>
   );
+}
+
+function exportAudit(format: "json" | "csv", audit: AuditLogEntry | undefined, caseId: string) {
+  if (!audit) return;
+  const baseName = `resolveflow-audit-${caseId || audit.case_id || "case"}`;
+  if (format === "json") {
+    downloadFile(`${baseName}.json`, "application/json", JSON.stringify(audit, null, 2));
+    return;
+  }
+  const rows = Object.entries(audit).map(([key, value]) => [
+    key,
+    Array.isArray(value) ? value.join(" | ") : String(value ?? ""),
+  ]);
+  const csv = [["field", "value"], ...rows]
+    .map((row) => row.map(csvCell).join(","))
+    .join("\n");
+  downloadFile(`${baseName}.csv`, "text/csv", csv);
+}
+
+function csvCell(value: string) {
+  return `"${value.replace(/"/g, '""')}"`;
+}
+
+function downloadFile(filename: string, type: string, content: string) {
+  const blob = new Blob([content], { type });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = filename;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  URL.revokeObjectURL(url);
 }

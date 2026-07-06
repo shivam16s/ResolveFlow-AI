@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import sqlite3
 import sys
 import tempfile
@@ -200,6 +201,26 @@ def assert_validates_inputs() -> None:
             raise AssertionError(f"bad create_ticket inputs were accepted: {kwargs}")
 
 
+def assert_create_ticket_uses_demo_time_anchor() -> None:
+    db_path = build_seeded_billing_db()
+    previous = os.environ.get("RESOLVEFLOW_NOW")
+    os.environ["RESOLVEFLOW_NOW"] = "2026-05-24T10:30:00"
+    try:
+        result = create_ticket(
+            "CUST-1001",
+            "billing_question",
+            db_path=db_path,
+        )
+    finally:
+        if previous is None:
+            os.environ.pop("RESOLVEFLOW_NOW", None)
+        else:
+            os.environ["RESOLVEFLOW_NOW"] = previous
+
+    if result["created_at"] != "2026-05-24T10:30:00":
+        raise AssertionError(f"ticket should use RESOLVEFLOW_NOW anchor: {result}")
+
+
 def assert_create_ticket_api_endpoint() -> None:
     db_path = build_seeded_billing_db()
     client = TestClient(create_app(db_path=db_path))
@@ -259,6 +280,7 @@ def main() -> None:
     assert_blocks_ticket_when_policy_prerequisites_fail()
     assert_blocks_policy_ticket_type_mismatch()
     assert_validates_inputs()
+    assert_create_ticket_uses_demo_time_anchor()
     assert_create_ticket_api_endpoint()
     print("create ticket tests passed")
 

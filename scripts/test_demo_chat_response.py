@@ -49,7 +49,7 @@ def test_angry_response_uses_repair_language() -> None:
 
 
 def test_angry_health_and_relationship_are_dynamic() -> None:
-    assert _health_score_for("angry", ["duplicate_charge", "refund_request"]) == 54
+    assert _health_score_for("angry", ["duplicate_charge", "refund_request"]) == 28
     assert _relationship_end({"churn_score": 0.76}, ["duplicate_charge", "refund_request"], "angry") == 40
     assert _empathy_mode_for("angry", 35) == "ANGER_REPAIR"
     assert _effective_emotion("This is ridiculous and I am angry", "frustrated") == "angry"

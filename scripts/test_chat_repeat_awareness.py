@@ -1,10 +1,15 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import sqlite3
 import sys
 import tempfile
+import threading
+import time
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from types import SimpleNamespace
 
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
@@ -57,10 +62,17 @@ def _make_db() -> Path:
     return db_path
 
 
-def _final_response(client: TestClient, customer_id: str, message: str) -> dict:
+def _final_response(
+    client: TestClient,
+    customer_id: str,
+    message: str,
+    session_id: str = "default",
+) -> dict:
     final: dict = {}
     with client.stream(
-        "GET", "/api/chat/message/stream", params={"customer_id": customer_id, "message": message}
+        "GET",
+        "/api/chat/message/stream",
+        params={"customer_id": customer_id, "session_id": session_id, "message": message},
     ) as response:
         assert response.status_code == 200
         for line in response.iter_lines():
@@ -94,7 +106,7 @@ def test_repeat_request_is_acknowledged_not_re_derived() -> None:
     # on a live LLM. Repeat-detection runs before the LLM call regardless.
     original = chat_routes._safe_llm_client
     chat_routes._safe_llm_client = lambda: None
-    chat_routes._CHAT_STATES.pop("CUST-RPT", None)
+    chat_routes._CHAT_STATES.pop(("CUST-RPT", "default"), None)
     try:
         with TestClient(create_app(db_path=db_path)) as client:
             first = _final_response(client, "CUST-RPT", "I was charged twice and want a refund")
@@ -134,14 +146,14 @@ def test_session_state_persists_across_restart() -> None:
             _final_response(client, "CUST-RPT", "I was charged twice and want a refund")
 
         # State row exists and remembers the finding.
-        stored = chat_routes._read_state_row("CUST-RPT", db_path)
+        stored = chat_routes._read_state_row("CUST-RPT", "default", db_path)
         assert stored is not None
         assert "duplicate:INV-RPT" in stored.get("presented_findings", [])
         assert stored.get("turn_count", 0) >= 1
 
         # Simulate a server restart: the in-memory cache is gone.
-        chat_routes._CHAT_STATES.pop("CUST-RPT", None)
-        assert "CUST-RPT" not in chat_routes._CHAT_STATES
+        chat_routes._CHAT_STATES.pop(("CUST-RPT", "default"), None)
+        assert ("CUST-RPT", "default") not in chat_routes._CHAT_STATES
 
         # Second process rehydrates from the database and still knows it was handled.
         with TestClient(create_app(db_path=db_path)) as client:
@@ -152,7 +164,194 @@ def test_session_state_persists_across_restart() -> None:
         assert (after.get("conversation_state") or {}).get("turn_count", 0) >= 2
     finally:
         chat_routes._safe_llm_client = original
-        chat_routes._CHAT_STATES.pop("CUST-RPT", None)
+        chat_routes._CHAT_STATES.pop(("CUST-RPT", "default"), None)
+
+
+def test_concurrent_streams_for_same_customer_preserve_both_turns() -> None:
+    db_path = _make_db()
+    original = chat_routes._safe_llm_client
+    chat_routes._safe_llm_client = lambda: None
+    chat_routes._CHAT_STATES.pop(("CUST-RPT", "default"), None)
+    chat_routes._CHAT_STATE_LOCKS.pop(("CUST-RPT", "default"), None)
+    app = create_app(db_path=db_path)
+
+    def send(message: str) -> dict:
+        with TestClient(app) as client:
+            return _final_response(client, "CUST-RPT", message)
+
+    messages = [
+        "I was charged twice and want a refund",
+        "Please check my duplicate charge again",
+    ]
+    try:
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            results = list(executor.map(send, messages))
+
+        assert all(result.get("text") for result in results)
+        stored = chat_routes._read_state_row("CUST-RPT", "default", db_path)
+        assert stored is not None
+        assert stored.get("turn_count") == 2
+        history = stored.get("history") or []
+        user_messages = [turn.get("content") for turn in history if turn.get("role") == "user"]
+        for message in messages:
+            assert message in user_messages, stored
+    finally:
+        chat_routes._safe_llm_client = original
+        chat_routes._CHAT_STATES.pop(("CUST-RPT", "default"), None)
+        chat_routes._CHAT_STATE_LOCKS.pop(("CUST-RPT", "default"), None)
+
+
+def test_same_session_stream_sends_first_bytes_while_prior_turn_is_slow() -> None:
+    db_path = _make_db()
+    original_llm = chat_routes._safe_llm_client
+    original_classifier = chat_routes._safe_classifier_client
+    slow_reply_started = threading.Event()
+    chat_routes._CHAT_STATES.pop(("CUST-RPT", "default"), None)
+    chat_routes._CHAT_STATE_LOCKS.pop(("CUST-RPT", "default"), None)
+    app = create_app(db_path=db_path)
+
+    class SlowReplyLLM:
+        def generate(self, prompt, **_kwargs):  # noqa: ANN001 - mirrors LLMClient.generate.
+            if "Customer Message:" in str(prompt):
+                slow_reply_started.set()
+                time.sleep(0.6)
+            return "Rahul, I checked the account evidence and will keep this grounded."
+
+    chat_routes._safe_llm_client = lambda: SlowReplyLLM()
+    chat_routes._safe_classifier_client = lambda: None
+
+    async def consume_all(message: str) -> None:
+        response = chat_routes.chat_message_stream(
+            SimpleNamespace(app=app),
+            customer_id="CUST-RPT",
+            session_id="default",
+            message=message,
+        )
+        async for _chunk in response.body_iterator:
+            pass
+
+    async def first_event_while_prior_turn_is_slow() -> tuple[dict, float]:
+        slow_task = asyncio.create_task(consume_all("Can you explain my current bill?"))
+        await asyncio.wait_for(asyncio.to_thread(slow_reply_started.wait), timeout=5)
+        response = chat_routes.chat_message_stream(
+            SimpleNamespace(app=app),
+            customer_id="CUST-RPT",
+            session_id="default",
+            message="Please check the duplicate charge too",
+        )
+        started = time.perf_counter()
+        chunk = await asyncio.wait_for(anext(response.body_iterator), timeout=0.4)
+        elapsed = time.perf_counter() - started
+        if hasattr(response.body_iterator, "aclose"):
+            await response.body_iterator.aclose()
+        await asyncio.wait_for(slow_task, timeout=5)
+        return json.loads(chunk.removeprefix("data: ")), elapsed
+
+    try:
+        first_event, elapsed = asyncio.run(first_event_while_prior_turn_is_slow())
+    finally:
+        chat_routes._safe_llm_client = original_llm
+        chat_routes._safe_classifier_client = original_classifier
+        chat_routes._CHAT_STATES.pop(("CUST-RPT", "default"), None)
+        chat_routes._CHAT_STATE_LOCKS.pop(("CUST-RPT", "default"), None)
+
+    assert first_event is not None
+    assert first_event["step"] == "intent"
+    assert first_event["status"] == "running"
+    assert elapsed < 0.4, f"second stream waited silently for {elapsed:.3f}s"
+
+
+def test_two_sessions_for_same_customer_do_not_clobber_each_other() -> None:
+    db_path = _make_db()
+    original = chat_routes._safe_llm_client
+    chat_routes._safe_llm_client = lambda: None
+    for key in [("CUST-RPT", "tab-a"), ("CUST-RPT", "tab-b")]:
+        chat_routes._CHAT_STATES.pop(key, None)
+        chat_routes._CHAT_STATE_LOCKS.pop(key, None)
+    app = create_app(db_path=db_path)
+
+    def send(args: tuple[str, str]) -> dict:
+        session_id, message = args
+        with TestClient(app) as client:
+            return _final_response(client, "CUST-RPT", message, session_id=session_id)
+
+    turns = [
+        ("tab-a", "I was charged twice and want a refund"),
+        ("tab-b", "I want to cancel my subscription"),
+    ]
+    try:
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            results = list(executor.map(send, turns))
+
+        assert all(result.get("text") for result in results)
+        state_a = chat_routes._read_state_row("CUST-RPT", "tab-a", db_path)
+        state_b = chat_routes._read_state_row("CUST-RPT", "tab-b", db_path)
+        assert state_a is not None
+        assert state_b is not None
+        assert state_a.get("session_id") == "tab-a"
+        assert state_b.get("session_id") == "tab-b"
+        assert state_a.get("active_flow") != "cancellation", state_a
+        assert state_b.get("active_flow") == "cancellation", state_b
+        history_a = [turn.get("content") for turn in (state_a.get("history") or [])]
+        history_b = [turn.get("content") for turn in (state_b.get("history") or [])]
+        assert turns[0][1] in history_a
+        assert turns[1][1] not in history_a
+        assert turns[1][1] in history_b
+        assert turns[0][1] not in history_b
+    finally:
+        chat_routes._safe_llm_client = original
+        for key in [("CUST-RPT", "tab-a"), ("CUST-RPT", "tab-b")]:
+            chat_routes._CHAT_STATES.pop(key, None)
+            chat_routes._CHAT_STATE_LOCKS.pop(key, None)
+
+
+def test_session_state_sqlite_helpers_run_off_event_loop() -> None:
+    db_path = _make_db()
+    original_load = chat_routes._load_session_state
+    original_save = chat_routes._save_session_state
+    original_abort = chat_routes._abort_cancellation
+    original_llm = chat_routes._safe_llm_client
+    calls: list[str] = []
+
+    def assert_not_on_event_loop(name: str) -> None:
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            calls.append(name)
+            return
+        raise AssertionError(f"{name} ran synchronous SQLite work on the SSE event loop")
+
+    def wrapped_load(customer_id, session_id, db_path_arg):
+        assert_not_on_event_loop("load")
+        return original_load(customer_id, session_id, db_path_arg)
+
+    def wrapped_save(customer_id, session_id, state, db_path_arg):
+        assert_not_on_event_loop("save")
+        return original_save(customer_id, session_id, state, db_path_arg)
+
+    def wrapped_abort(state, customer_id=None, session_id="default", db_path_arg=None):
+        assert_not_on_event_loop("abort")
+        return original_abort(state, customer_id, session_id, db_path_arg)
+
+    chat_routes._load_session_state = wrapped_load
+    chat_routes._save_session_state = wrapped_save
+    chat_routes._abort_cancellation = wrapped_abort
+    chat_routes._safe_llm_client = lambda: None
+    chat_routes._CHAT_STATES.pop(("CUST-RPT", "default"), None)
+    try:
+        with TestClient(create_app(db_path=db_path)) as client:
+            _final_response(client, "CUST-RPT", "I want to cancel my subscription")
+            _final_response(client, "CUST-RPT", "never mind, do not cancel")
+    finally:
+        chat_routes._load_session_state = original_load
+        chat_routes._save_session_state = original_save
+        chat_routes._abort_cancellation = original_abort
+        chat_routes._safe_llm_client = original_llm
+        chat_routes._CHAT_STATES.pop(("CUST-RPT", "default"), None)
+
+    for expected in ("load", "save", "abort"):
+        if expected not in calls:
+            raise AssertionError(f"{expected} helper did not run during the chat flow: {calls}")
 
 
 def test_overclaim_guard_blocks_unbacked_refund_promises() -> None:
@@ -199,6 +398,10 @@ if __name__ == "__main__":
     test_finding_helpers_track_and_detect_repeats()
     test_repeat_request_is_acknowledged_not_re_derived()
     test_session_state_persists_across_restart()
+    test_concurrent_streams_for_same_customer_preserve_both_turns()
+    test_same_session_stream_sends_first_bytes_while_prior_turn_is_slow()
+    test_two_sessions_for_same_customer_do_not_clobber_each_other()
+    test_session_state_sqlite_helpers_run_off_event_loop()
     test_overclaim_guard_blocks_unbacked_refund_promises()
     test_recancel_after_request_created_reconfirms_instead_of_restarting()
     print("chat repeat awareness tests passed")

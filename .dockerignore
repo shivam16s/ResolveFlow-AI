@@ -1,0 +1,14 @@
+.git
+.github
+.venv
+__pycache__
+*.py[cod]
+.env
+data/*.db
+data/*.db-*
+data/chroma
+data/chroma_*
+frontend/.next
+frontend/node_modules
+frontend/dev-server.*.log
+scratch

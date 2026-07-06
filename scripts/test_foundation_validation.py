@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import sqlite3
 from pathlib import Path
 import sys
 import tempfile
@@ -28,8 +29,8 @@ def test_foundation_validation_passes_real_seed_shape() -> None:
         )
         if not report.ok:
             raise AssertionError(report.to_dict())
-        if report.table_count != 13:
-            raise AssertionError(f"expected 13 tables: {report.to_dict()}")
+        if report.table_count != 14:
+            raise AssertionError(f"expected 14 tables: {report.to_dict()}")
         if report.row_counts["customers"] != 20 or report.row_counts["invoices"] != 20:
             raise AssertionError(f"seed counts wrong: {report.to_dict()}")
         if report.duplicate_charge_customer_ids != ["CUST-1001"]:
@@ -53,9 +54,33 @@ def test_foundation_validation_reports_missing_assets() -> None:
                 raise AssertionError(f"missing problem fragment {fragment}: {report.to_dict()}")
 
 
+def test_invoice_payment_id_is_unique() -> None:
+    with tempfile.TemporaryDirectory() as tmpdir:
+        db_path = Path(tmpdir) / "resolveflow.db"
+        seed_billing(db_path)
+        connection = sqlite3.connect(db_path)
+        try:
+            try:
+                connection.execute(
+                    """
+                    INSERT INTO invoices(invoice_id, customer_id, amount, date, status, payment_id)
+                    VALUES (?, ?, ?, ?, ?, ?)
+                    """,
+                    ("INV-DUP-PAYMENT", "CUST-1001", 1199.0, "2026-05-24", "paid", "PAY-1001-A"),
+                )
+            except sqlite3.IntegrityError:
+                connection.rollback()
+                pass
+            else:
+                raise AssertionError("invoices.payment_id should reject duplicate payment links")
+        finally:
+            connection.close()
+
+
 def main() -> None:
     test_foundation_validation_passes_real_seed_shape()
     test_foundation_validation_reports_missing_assets()
+    test_invoice_payment_id_is_unique()
     print("foundation validation tests passed")
 
 

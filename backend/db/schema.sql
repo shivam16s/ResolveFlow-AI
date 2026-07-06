@@ -15,6 +15,9 @@ CREATE TABLE IF NOT EXISTS customers (
   email TEXT NOT NULL UNIQUE,
   location TEXT NOT NULL,
   plan_id TEXT NOT NULL REFERENCES plans(plan_id),
+  pending_plan_id TEXT REFERENCES plans(plan_id),
+  pending_plan_effective_date DATE,
+  pending_plan_requested_at DATETIME,
   risk_level TEXT NOT NULL DEFAULT 'low'
     CHECK (risk_level IN ('low', 'medium', 'high', 'critical')),
   preferred_language TEXT NOT NULL DEFAULT 'en',
@@ -40,7 +43,7 @@ CREATE TABLE IF NOT EXISTS invoices (
   date DATE NOT NULL,
   status TEXT NOT NULL DEFAULT 'pending'
     CHECK (status IN ('paid', 'pending', 'disputed')),
-  payment_id TEXT REFERENCES payments(payment_id)
+  payment_id TEXT UNIQUE REFERENCES payments(payment_id)
 );
 
 CREATE TABLE IF NOT EXISTS outages (
@@ -62,6 +65,10 @@ CREATE TABLE IF NOT EXISTS tickets (
   priority TEXT NOT NULL DEFAULT 'medium'
     CHECK (priority IN ('low', 'medium', 'high', 'critical')),
   created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  appointment_id TEXT UNIQUE,
+  appointment_slot TEXT,
+  technician_name TEXT,
+  scheduled_at DATETIME,
   resolved_at DATETIME
 );
 
@@ -155,9 +162,25 @@ CREATE TABLE IF NOT EXISTS conversations (
   completed_at DATETIME
 );
 
+CREATE TABLE IF NOT EXISTS telemetry (
+  telemetry_id TEXT PRIMARY KEY,
+  session_id TEXT NOT NULL,
+  customer_id TEXT NOT NULL REFERENCES customers(customer_id),
+  turn_count INTEGER NOT NULL CHECK (turn_count >= 0),
+  latency_ms REAL NOT NULL CHECK (latency_ms >= 0),
+  input_tokens INTEGER NOT NULL DEFAULT 0 CHECK (input_tokens >= 0),
+  output_tokens INTEGER NOT NULL DEFAULT 0 CHECK (output_tokens >= 0),
+  total_tokens INTEGER NOT NULL DEFAULT 0 CHECK (total_tokens >= 0),
+  stage_breakdown TEXT NOT NULL DEFAULT '{}',
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
 CREATE INDEX IF NOT EXISTS idx_customers_plan_id ON customers(plan_id);
 CREATE INDEX IF NOT EXISTS idx_customers_location ON customers(location);
 CREATE INDEX IF NOT EXISTS idx_invoices_customer_id ON invoices(customer_id);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_invoices_payment_id_unique
+ON invoices(payment_id)
+WHERE payment_id IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_payments_customer_id_date ON payments(customer_id, date);
 CREATE INDEX IF NOT EXISTS idx_outages_location_verified ON outages(location, verified);
 CREATE INDEX IF NOT EXISTS idx_tickets_customer_id_status ON tickets(customer_id, status);
@@ -167,3 +190,5 @@ CREATE INDEX IF NOT EXISTS idx_audit_logs_customer_id ON audit_logs(customer_id)
 CREATE INDEX IF NOT EXISTS idx_handoff_status ON human_handoff_queue(status);
 CREATE INDEX IF NOT EXISTS idx_memory_store_customer_type ON memory_store(customer_id, memory_type);
 CREATE INDEX IF NOT EXISTS idx_conversations_customer_id ON conversations(customer_id);
+CREATE INDEX IF NOT EXISTS idx_telemetry_session_id ON telemetry(session_id);
+CREATE INDEX IF NOT EXISTS idx_telemetry_created_at ON telemetry(created_at);

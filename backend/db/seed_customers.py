@@ -136,7 +136,7 @@ def seed_customers(db_path: Path = DEFAULT_DB_PATH) -> None:
     initialize_database(db_path)
     with sqlite3.connect(db_path) as connection:
         connection.execute("PRAGMA foreign_keys = ON")
-        connection.execute("PRAGMA journal_mode = MEMORY")
+        connection.execute("PRAGMA journal_mode = WAL")
         seed_plans(connection)
         connection.executemany(
             """

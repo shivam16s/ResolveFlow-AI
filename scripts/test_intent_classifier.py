@@ -99,6 +99,49 @@ def test_llm_json_parser_rejects_unknown_intent() -> None:
         raise AssertionError("unknown LLM intent was accepted")
 
 
+def test_llm_confidence_falls_back_when_not_numeric() -> None:
+    responses = [
+        {"confidence": None},
+        {"confidence": "high"},
+        {"confidence": "NaN"},
+    ]
+
+    for payload in responses:
+        payload = {
+            "intents": ["billing_dispute"],
+            "primary_intent": "billing_dispute",
+            "cancellation_risk": False,
+            "urgency": "low",
+            "emotion": "neutral",
+            "evidence_terms": ["bill"],
+            **payload,
+        }
+        classifier = IntentClassifier(llm_client=lambda _, payload=payload: json.dumps(payload))
+        result = classifier.classify("Can you explain my bill?")
+        assert result.confidence == 0.7
+        assert result.intent_probabilities["billing_dispute"] == 0.7
+
+
+def test_local_classifier_does_not_match_down_inside_downgrade() -> None:
+    classifier = IntentClassifier()
+    result = classifier.classify("I want to downgrade my plan to a cheaper broadband option.")
+
+    assert "plan_change" in result.intents
+    assert "service_outage" not in result.intents
+    assert result.primary_intent == "plan_change"
+    assert "downgrade" in result.evidence_terms
+    assert "down" not in result.evidence_terms
+
+
+def test_local_classifier_still_detects_real_down_outage() -> None:
+    classifier = IntentClassifier()
+    result = classifier.classify("My internet is down and nothing works.")
+
+    assert "service_outage" in result.intents
+    assert result.primary_intent == "service_outage"
+    assert "down" in result.evidence_terms
+
+
 def test_local_classifier_detects_multiple_scenario_intents() -> None:
     classifier = IntentClassifier()
     cases = {
@@ -130,6 +173,9 @@ def main() -> None:
     test_local_classifier_detects_structured_multi_issue_output()
     test_llm_json_parser_accepts_fenced_json()
     test_llm_json_parser_rejects_unknown_intent()
+    test_llm_confidence_falls_back_when_not_numeric()
+    test_local_classifier_does_not_match_down_inside_downgrade()
+    test_local_classifier_still_detects_real_down_outage()
     test_local_classifier_detects_multiple_scenario_intents()
     print("PASS intent classifier structured JSON tests")
 

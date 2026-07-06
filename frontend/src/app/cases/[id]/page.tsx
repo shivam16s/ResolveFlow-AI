@@ -307,6 +307,11 @@ export default function CaseDetailPage() {
   if (error) return <div className="p-6"><StatePanel label="Could not load this case from FastAPI." /></div>;
   if (!c) return <div className="p-6"><StatePanel label="Case not found." /></div>;
 
+  const sentimentTimeline = c.health_score_timeline.map((point) => ({
+    ...point,
+    sentiment_pct: Math.round((point.sentiment_score ?? point.score / 100) * 100),
+  }));
+
   return (
     <div className="flex flex-col h-[calc(100vh-56px)]">
       <div className="flex items-center gap-3 px-6 py-3 border-b shrink-0" style={{ borderColor: "var(--border)", background: "var(--surface-1)" }}>
@@ -392,6 +397,26 @@ export default function CaseDetailPage() {
                           </div>
                         ) : null} />
                         <Line type="monotone" dataKey="score" stroke="#14b8a6" strokeWidth={2.5} dot={{ fill: "#14b8a6", r: 4 }} />
+                      </LineChart>
+                    </ResponsiveContainer>
+                  )}
+                </div>
+
+                <div className="glass p-4">
+                  <PanelTitle icon={<Activity size={11} style={{ color: "#5eead4" }} />}>Sentiment Over Time</PanelTitle>
+                  {sentimentTimeline.length === 0 ? <p className="text-sm" style={{ color: "var(--text-muted)" }}>No sentiment samples recorded.</p> : (
+                    <ResponsiveContainer width="100%" height={130}>
+                      <LineChart data={sentimentTimeline}>
+                        <XAxis dataKey="turn" tick={{ fill: "#5a5a7a", fontSize: 10 }} axisLine={false} tickLine={false} />
+                        <YAxis domain={[0, 100]} tick={{ fill: "#5a5a7a", fontSize: 10 }} axisLine={false} tickLine={false} />
+                        <Tooltip content={({ active, payload }) => active && payload?.[0] ? (
+                          <div className="glass px-3 py-2 text-xs">
+                            <p style={{ color: "#5eead4" }}>Sentiment: {payload[0].value}%</p>
+                            <p style={{ color: "var(--text-secondary)" }}>{payload[0].payload.sentiment_label ?? "sentiment"}</p>
+                            <p style={{ color: "var(--text-muted)", maxWidth: 180 }}>{payload[0].payload.label}</p>
+                          </div>
+                        ) : null} />
+                        <Line type="monotone" dataKey="sentiment_pct" stroke="#8b5cf6" strokeWidth={2.5} dot={{ fill: "#8b5cf6", r: 4 }} />
                       </LineChart>
                     </ResponsiveContainer>
                   )}

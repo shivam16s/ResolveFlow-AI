@@ -72,23 +72,46 @@ def _scenario_requires_escalation(scenario: EvaluationScenario) -> bool:
 def _case_policy_violation(case: dict[str, Any]) -> bool:
     if case.get("forbidden_tools_called"):
         return True
-    for failure in case.get("failures", []):
-        lowered = str(failure).lower()
-        if (
-            "forbidden" in lowered
-            or "exceeds maximum" in lowered
-            or "persisted when forbidden" in lowered
-            or "side effect was persisted" in lowered
-        ):
+
+    artifacts = case.get("artifacts", {})
+    if not isinstance(artifacts, dict):
+        return False
+
+    for result in artifacts.get("tool_results", {}).values():
+        if isinstance(result, dict) and _noncompliant_policy_status(result.get("policy_status")):
             return True
+    audit_log = artifacts.get("audit_log")
+    if isinstance(audit_log, dict) and _noncompliant_policy_status(audit_log.get("policy_status")):
+        return True
     return False
 
 
-def _case_missed_escalation(case: dict[str, Any]) -> bool:
-    for failure in case.get("failures", []):
-        lowered = str(failure).lower()
-        if "handoff" in lowered and ("missing" in lowered or "expected" in lowered):
-            return True
+def _noncompliant_policy_status(status: object) -> bool:
+    if status is None:
+        return False
+    normalized = str(status).strip().lower()
+    return bool(normalized) and normalized not in {"compliant", "not_applicable", "skipped"}
+
+
+def _case_observed_escalation(case: dict[str, Any]) -> bool:
+    if "generate_handoff_summary" in case.get("tools_called", []):
+        return True
+
+    artifacts = case.get("artifacts", {})
+    if not isinstance(artifacts, dict):
+        return False
+
+    handoff_result = artifacts.get("tool_results", {}).get("generate_handoff_summary")
+    if isinstance(handoff_result, dict) and handoff_result.get("handoff_summary_id"):
+        return True
+
+    audit_log = artifacts.get("audit_log")
+    if isinstance(audit_log, dict) and audit_log.get("handoff_required"):
+        return True
+
+    handoff_queue = artifacts.get("handoff_queue")
+    if isinstance(handoff_queue, dict) and handoff_queue.get("handoff_id"):
+        return True
     return False
 
 
@@ -125,7 +148,7 @@ def compute_business_adherence(
             policy_violations.append(case["scenario_id"])
         if _scenario_requires_escalation(scenario):
             escalation_opportunities += 1
-            if _case_missed_escalation(case):
+            if not _case_observed_escalation(case):
                 escalation_violations.append(case["scenario_id"])
 
     # 3: consistency = same scenario must reach the same verdict across passes.

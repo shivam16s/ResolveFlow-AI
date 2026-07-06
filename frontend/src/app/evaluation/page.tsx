@@ -12,6 +12,29 @@ import { api } from "@/lib/api";
 import { formatPct, formatDate } from "@/lib/utils";
 import type { EvaluationReport, ScenarioResult } from "@/lib/types";
 
+const EVALUATION_POLL_ATTEMPTS = 180;
+const EVALUATION_POLL_INTERVAL_MS = 1000;
+
+function delay(ms: number) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function waitForEvaluationRun(expectedRunId: string, immediateSummary?: EvaluationReport) {
+  for (let attempt = 0; attempt < EVALUATION_POLL_ATTEMPTS; attempt += 1) {
+    const latest = await api.evaluation.results();
+    if (latest.run_id === expectedRunId) {
+      return latest;
+    }
+    await delay(EVALUATION_POLL_INTERVAL_MS);
+  }
+
+  if (immediateSummary?.run_id === expectedRunId) {
+    return immediateSummary;
+  }
+
+  throw new Error(`Evaluation run ${expectedRunId} did not become the latest saved result yet`);
+}
+
 function StatusIcon({ status }: { status: ScenarioResult["status"] }) {
   if (status === "pass") return <CheckCircle2 size={14} className="text-emerald-400" />;
   if (status === "fail") return <XCircle size={14} className="text-rose-400" />;
@@ -31,8 +54,14 @@ export default function EvaluationPage() {
     setRunning(true);
     setRunError(null);
     try {
-      await api.evaluation.run();
-      await mutate();
+      const started = await api.evaluation.run();
+      const expectedRunId = started.run_id ?? started.job_id;
+      if (started.summary?.run_id === expectedRunId) {
+        await mutate(started.summary, { revalidate: false });
+        return;
+      }
+      const latest = await waitForEvaluationRun(expectedRunId, started.summary);
+      await mutate(latest, { revalidate: false });
     } catch (err) {
       setRunError(err instanceof Error ? err.message : "Evaluation run failed");
     } finally {
@@ -53,6 +82,8 @@ export default function EvaluationPage() {
       ? contextValues.reduce((sum, value) => sum + value, 0) / contextValues.length
       : 0;
   const ba = report.business_adherence ?? null;
+  const temperatureRows = report.temperature_results ?? [];
+  const hasTemperatureVariation = temperatureRows.some((row) => row.temperature !== null);
   const radarData = [
     { metric: "Pass@5", value: report.avg_pass_k * 100 },
     { metric: "Policy", value: report.avg_policy_compliance * 100 },
@@ -99,7 +130,9 @@ export default function EvaluationPage() {
       )}
 
       <div className="glass px-4 py-3 mb-5 text-sm" style={{ color: "var(--text-secondary)", borderColor: "rgba(20,184,166,0.22)", background: "rgba(20,184,166,0.06)" }}>
-        Deterministic mode: Pass@5 equals Pass@1 for the current backend runner. Temperature and seed variation are planned; latest pass rate is {formatPct(report.pass_rate * 100)} versus tau-bench-style SOTA below 50%.
+        {hasTemperatureVariation
+          ? `Temperature-varied mode: pass@${temperatureRows[0]?.pass_indices.length || 5} is grouped below by live LLM temperature; latest pass rate is ${formatPct(report.pass_rate * 100)} versus tau-bench-style SOTA below 50%.`
+          : `Deterministic fallback mode: Pass@5 equals Pass@1 unless live LLM temperature variation is enabled; latest pass rate is ${formatPct(report.pass_rate * 100)} versus tau-bench-style SOTA below 50%.`}
       </div>
 
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
@@ -171,6 +204,33 @@ export default function EvaluationPage() {
                 <p className="text-xs font-medium" style={{ color: "var(--text-secondary)" }}>{dim.label}</p>
                 <p className="text-lg font-bold font-mono mt-1" style={{ color: dim.violations === 0 ? "#10b981" : "#f59e0b" }}>{formatPct(dim.adherence_rate * 100)}</p>
                 <p className="text-[11px] mt-0.5" style={{ color: "var(--text-muted)" }}>{dim.violations}/{dim.opportunities} violations</p>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {temperatureRows.length > 0 && (
+        <div className="glass p-5 mb-6">
+          <div className="flex items-center gap-2 mb-4">
+            <FlaskConical size={14} style={{ color: "#5eead4" }} />
+            <p className="text-sm font-semibold" style={{ color: "var(--text-primary)" }}>Per-Temperature Results</p>
+            <span className="text-[11px]" style={{ color: "var(--text-muted)" }}>
+              {hasTemperatureVariation ? "live variation enabled" : "deterministic fallback"}
+            </span>
+          </div>
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-3">
+            {temperatureRows.map((row) => (
+              <div key={row.label} className="p-3 rounded-lg" style={{ background: "var(--surface-3)", border: "1px solid var(--border)" }}>
+                <p className="text-[11px] uppercase tracking-wider" style={{ color: "var(--text-muted)" }}>
+                  {row.temperature === null ? "fallback" : `temp ${row.temperature.toFixed(2)}`}
+                </p>
+                <p className="text-xl font-bold font-mono mt-1" style={{ color: row.pass_rate >= 0.8 ? "#10b981" : row.pass_rate >= 0.5 ? "#f59e0b" : "#ef4444" }}>
+                  {formatPct(row.pass_rate * 100)}
+                </p>
+                <p className="text-[11px] mt-1" style={{ color: "var(--text-muted)" }}>
+                  {row.runs} runs · score {formatPct(row.avg_score * 100)}
+                </p>
               </div>
             ))}
           </div>

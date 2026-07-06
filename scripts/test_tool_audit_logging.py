@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
 import json
 import sqlite3
 import sys
@@ -132,6 +133,51 @@ def assert_action_tool_logging_records_actions_and_policy_path() -> None:
         raise AssertionError(f"credit reason should be evidence: {row}")
 
 
+def assert_audit_session_mismatch_blocks_action_before_commit() -> None:
+    db_path = build_billing_db()
+    headers = {
+        "X-ResolveFlow-Session-Id": "sess-owned-by-1002",
+        "X-ResolveFlow-Case-Id": "case-mismatch-credit",
+    }
+    with sqlite3.connect(db_path) as connection:
+        connection.execute(
+            "INSERT INTO conversations(session_id, customer_id, messages) VALUES (?, ?, ?)",
+            ("sess-owned-by-1002", "CUST-1002", "[]"),
+        )
+
+    with TestClient(create_app(db_path=db_path)) as client:
+        response = client.post(
+            "/api/tools/apply_credit",
+            headers=headers,
+            json={
+                "customer_id": "CUST-1001",
+                "amount": 300,
+                "reason": "Verified outage credit",
+                "policy_context": VALID_SERVICE_CREDIT_CONTEXT,
+                "applied_to_invoice": "INV-8821",
+            },
+        )
+
+    if response.status_code != 409:
+        raise AssertionError(f"session mismatch should fail before action: {response.status_code} {response.text}")
+    if "does not belong to customer" not in response.text:
+        raise AssertionError(f"mismatch detail missing: {response.text}")
+
+    with sqlite3.connect(db_path) as connection:
+        credits = connection.execute(
+            "SELECT COUNT(*) FROM credits WHERE customer_id = ?",
+            ("CUST-1001",),
+        ).fetchone()[0]
+        audit_rows = connection.execute(
+            "SELECT COUNT(*) FROM audit_logs WHERE case_id = ?",
+            ("case-mismatch-credit",),
+        ).fetchone()[0]
+    if credits != 0:
+        raise AssertionError(f"mismatched session committed credit rows: {credits}")
+    if audit_rows != 0:
+        raise AssertionError(f"mismatched session should not write audit row: {audit_rows}")
+
+
 def assert_policy_lookup_uses_customer_header_for_audit() -> None:
     db_path = build_billing_db()
     headers = {
@@ -168,11 +214,36 @@ def assert_calls_without_audit_context_still_work_without_logging() -> None:
         raise AssertionError(f"calls without audit headers should not create audit rows; got {count}")
 
 
+def assert_concurrent_tool_calls_preserve_all_audit_entries() -> None:
+    db_path = build_billing_db()
+    app = create_app(db_path=db_path)
+    headers = {
+        "X-ResolveFlow-Session-Id": "sess-concurrent-audit",
+        "X-ResolveFlow-Case-Id": "case-concurrent-audit",
+    }
+
+    def call_lookup(_: int) -> None:
+        with TestClient(app) as client:
+            response = client.get("/api/tools/lookup_customer/CUST-1001", headers=headers)
+        if response.status_code != 200:
+            raise AssertionError(f"concurrent lookup failed: {response.status_code} {response.text}")
+
+    with ThreadPoolExecutor(max_workers=8) as executor:
+        list(executor.map(call_lookup, range(8)))
+
+    row = read_audit_row(db_path, case_id="case-concurrent-audit")
+    tool_names = [entry["tool_name"] for entry in row["tools_called"]]
+    if len(tool_names) != 8 or any(name != "lookup_customer" for name in tool_names):
+        raise AssertionError(f"concurrent audit appends were lost: {row}")
+
+
 def main() -> None:
     assert_get_tool_calls_are_appended_to_audit_log()
     assert_action_tool_logging_records_actions_and_policy_path()
+    assert_audit_session_mismatch_blocks_action_before_commit()
     assert_policy_lookup_uses_customer_header_for_audit()
     assert_calls_without_audit_context_still_work_without_logging()
+    assert_concurrent_tool_calls_preserve_all_audit_entries()
     print("tool audit logging tests passed")
 
 

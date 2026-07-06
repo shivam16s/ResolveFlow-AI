@@ -233,6 +233,63 @@ def assert_adds_synonymy_edges_at_threshold() -> None:
         raise AssertionError(f"synonymy edge should be idempotent: {retry_synonymy}")
 
 
+def assert_synonymy_edges_can_be_scoped_to_touched_nodes() -> None:
+    connection = make_connection()
+    update_memory_graph(
+        connection,
+        customer_id="CUST-1001",
+        memory_id="mem-001",
+        triples=[
+            {
+                "subject": "duplicate charge",
+                "relation": "matches",
+                "object": "billing dispute",
+                "confidence": 0.8,
+                "evidence": "duplicate charge billing dispute",
+            },
+            {
+                "subject": "plan downgrade",
+                "relation": "resembles",
+                "object": "plan change",
+                "confidence": 0.8,
+                "evidence": "plan downgrade plan change",
+            },
+        ],
+    )
+
+    vectors = {
+        "duplicate charge": [1.0, 0.0],
+        "billing dispute": [0.95, 0.05],
+        "plan downgrade": [0.0, 1.0],
+        "plan change": [0.0, 0.95],
+    }
+
+    def fake_embeddings(labels: list[str]) -> list[list[float]]:
+        return [vectors[label] for label in labels]
+
+    update = add_synonymy_edges(
+        connection,
+        customer_id="CUST-1001",
+        threshold=0.8,
+        embedding_function=fake_embeddings,
+        candidate_node_ids=["duplicate_charge"],
+    )
+    if update.edges_upserted != 2:
+        raise AssertionError(f"only candidate-to-neighbor edges should be upserted: {update.to_dict()}")
+
+    duplicate_node = get_memory_graph_node(connection, "CUST-1001", "duplicate_charge")
+    if duplicate_node is None:
+        raise AssertionError("duplicate charge node missing")
+    if not any(edge["relation"] == "synonymy" and edge["target_node"] == "billing_dispute" for edge in duplicate_node["edges"]):
+        raise AssertionError(f"candidate synonymy edge missing: {duplicate_node['edges']}")
+
+    plan_node = get_memory_graph_node(connection, "CUST-1001", "plan_downgrade")
+    if plan_node is None:
+        raise AssertionError("plan downgrade node missing")
+    if any(edge["relation"] == "synonymy" and edge["target_node"] == "plan_change" for edge in plan_node["edges"]):
+        raise AssertionError(f"untouched historical nodes should not be rescored together: {plan_node['edges']}")
+
+
 def assert_cosine_similarity_math() -> None:
     if round(cosine_similarity([1, 0], [1, 0]), 4) != 1.0:
         raise AssertionError("identical vectors should have similarity 1")
@@ -432,6 +489,7 @@ def main() -> None:
     assert_upserts_nodes_and_edges()
     assert_updates_are_idempotent_and_merge_passages()
     assert_adds_synonymy_edges_at_threshold()
+    assert_synonymy_edges_can_be_scoped_to_touched_nodes()
     assert_cosine_similarity_math()
     assert_ppr_retrieves_multi_hop_passages()
     assert_ppr_uses_embedding_query_nodes()

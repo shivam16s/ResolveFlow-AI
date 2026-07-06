@@ -155,8 +155,7 @@ class IntentClassifier:
         if urgency not in URGENCY_LEVELS:
             urgency = "low"
 
-        confidence = float(payload.get("confidence", 0.7))
-        confidence = max(0.0, min(1.0, confidence))
+        confidence = _coerce_confidence(payload.get("confidence"), default=0.7)
         intent_probabilities = _clean_probability_payload(
             payload.get("intent_probabilities"))
         if not intent_probabilities:
@@ -211,6 +210,7 @@ class IntentClassifier:
                 "outage",
                 "outages",
                 "down",
+                "downtime",
                 "not working",
                 "nothing works",
                 "connection",
@@ -221,10 +221,13 @@ class IntentClassifier:
             "plan_change": (
                 "upgrade",
                 "downgrade",
-                "plan",
-                "faster",
+                "change my plan",
+                "change plan",
+                "switch plan",
+                "different plan",
+                "new plan",
                 "cheapest",
-                "speed",
+                "cheaper plan",
                 "activate",
                 "activation",
                 "gbps",
@@ -240,7 +243,7 @@ class IntentClassifier:
         }
 
         for intent, keywords in keyword_groups.items():
-            found = [keyword for keyword in keywords if keyword in text]
+            found = [keyword for keyword in keywords if _keyword_in_text(keyword, text)]
             if found:
                 matches[intent] = found
 
@@ -286,6 +289,14 @@ def _dedupe(values: Iterable[str]) -> list[str]:
     return result
 
 
+def _keyword_in_text(keyword: str, text: str) -> bool:
+    normalized_keyword = keyword.lower().strip()
+    if not normalized_keyword:
+        return False
+    pattern = rf"(?<![a-z0-9]){re.escape(normalized_keyword)}(?![a-z0-9])"
+    return re.search(pattern, text) is not None
+
+
 def _rule_intent_logits(matches: dict[str, list[str]]) -> dict[str, float]:
     logits = {intent: -1.5 for intent in ALLOWED_INTENTS}
     for intent, terms in matches.items():
@@ -313,6 +324,16 @@ def _softmax(logits: dict[str, float]) -> dict[str, float]:
 def _intent_confidence_from_probabilities(intents: list[str], probabilities: dict[str, float]) -> float:
     confidence = sum(probabilities.get(intent, 0.0) for intent in intents)
     return round(max(0.0, min(1.0, confidence)), 2)
+
+
+def _coerce_confidence(value: object, *, default: float) -> float:
+    try:
+        confidence = float(value)
+    except (TypeError, ValueError):
+        confidence = default
+    if not math.isfinite(confidence):
+        confidence = default
+    return max(0.0, min(1.0, confidence))
 
 
 def _clean_probability_payload(raw_probabilities: object) -> dict[str, float]:

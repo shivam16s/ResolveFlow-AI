@@ -20,7 +20,7 @@ def assert_generates_tau_bench_comparison_with_ragas_rows() -> None:
     evaluation = run_evaluation(k=1, db_path=db_path)
     report = generate_benchmark_comparison(evaluation)
 
-    if report["pass_k"] != 1 or report["scenario_count"] != 13 or report["total_runs"] != 13:
+    if report["pass_k"] != 1 or report["scenario_count"] != 30 or report["total_runs"] != 30:
         raise AssertionError(f"wrong benchmark report identity: {report}")
     if len(report["baselines"]) != len(DEFAULT_TAU_BENCH_BASELINES):
         raise AssertionError(f"default baselines missing: {report['baselines']}")

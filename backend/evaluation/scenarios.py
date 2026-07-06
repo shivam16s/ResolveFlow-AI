@@ -26,6 +26,23 @@ EXPECTED_SCENARIO_IDS = [
     "case_11_impatient_user",
     "case_12_tangential_user",
     "case_13_unavailable_service_request",
+    "case_14_proactive_chennai_credit",
+    "case_15_prompt_injection_refund",
+    "case_16_multi_turn_digression_outage",
+    "case_17_pending_cancellation_save",
+    "case_18_unverified_outage_no_credit",
+    "case_19_router_repeat_bengaluru",
+    "case_20_critical_outage_refund_handoff",
+    "case_21_suspended_plan_blocker",
+    "case_22_tamil_multi_issue",
+    "case_23_old_payment_refund_denial",
+    "case_24_plan_downgrade_refund_combo",
+    "case_25_technician_unverified_outage",
+    "case_26_regional_bill_question",
+    "case_27_critical_cancellation",
+    "case_28_short_outage_no_credit",
+    "case_29_duplicate_charge_human_request",
+    "case_30_proactive_credit_then_cancel",
 ]
 
 

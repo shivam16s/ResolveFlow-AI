@@ -31,7 +31,7 @@ METRIC_NAMES = (
 @dataclass(frozen=True)
 class EvaluationMetric:
     name: str
-    value: float
+    value: float | None
     numerator: float | None
     denominator: float | None
     higher_is_better: bool
@@ -148,7 +148,7 @@ def _compute_metrics(results: list[dict], scenario_by_id: dict[str, EvaluationSc
 
     collaborative_average = _average(collaborative_scores)
     noncollab_average = _average(noncollab_scores)
-    noncollab_degradation = max(0.0, collaborative_average - noncollab_average)
+    noncollab_degradation = collaborative_average - noncollab_average
 
     return [
         EvaluationMetric(
@@ -294,8 +294,8 @@ def _expects_audit_trail(scenario: EvaluationScenario) -> bool:
 
 
 def _has_audit_trail(result: dict) -> bool:
-    tools = set(result.get("tools_called", []))
-    return bool(tools & {"apply_credit", "create_ticket", "generate_handoff_summary"})
+    artifacts = result.get("artifacts", {})
+    return isinstance(artifacts, dict) and bool(artifacts.get("audit_log"))
 
 
 def _abstention_violated(result: dict, scenario: EvaluationScenario) -> bool:
@@ -318,9 +318,9 @@ def _nested_get(payload: dict, *keys: str):
     return current
 
 
-def _rate(numerator: int, denominator: int) -> float:
+def _rate(numerator: int, denominator: int) -> float | None:
     if denominator <= 0:
-        return 1.0
+        return None
     return round(numerator / denominator, 4)
 
 

@@ -47,7 +47,7 @@ def seed_demo_dashboard(db_path: Path = DEFAULT_DB_PATH) -> dict[str, Any]:
     now = datetime.now().replace(microsecond=0)
     with sqlite3.connect(db_path) as connection:
         connection.execute("PRAGMA foreign_keys = ON")
-        connection.execute("PRAGMA journal_mode = MEMORY")
+        connection.execute("PRAGMA journal_mode = WAL")
         _seed_demo_customer_risk(connection)
         _seed_demo_billing_history(connection)
         _seed_demo_conversations(connection, now)

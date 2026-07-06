@@ -47,24 +47,36 @@ class GeminiGenerateClient:
         response_mime_type: str = "text/plain",
         temperature: float = 0.0,
         max_output_tokens: int = 1024,
+        thinking_budget: int | None = None,
     ) -> str:
         if not prompt.strip():
             raise ValueError("prompt must not be empty")
 
         model_name = quote(self.model, safe="")
-        url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:generateContent?key={self.api_key}"
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:generateContent"
+        generation_config: dict[str, Any] = {
+            "temperature": temperature,
+            "maxOutputTokens": max_output_tokens,
+            "responseMimeType": response_mime_type,
+        }
+        if thinking_budget is not None:
+            # gemini-2.5-flash spends part of max_output_tokens on internal
+            # reasoning before emitting visible text; tasks that don't need
+            # reasoning (e.g. translation) should disable it (budget=0) so the
+            # full token budget goes to the actual output instead of being
+            # silently consumed by an unpredictable thinking phase.
+            generation_config["thinkingConfig"] = {"thinkingBudget": thinking_budget}
         body = {
             "contents": [{"parts": [{"text": prompt}]}],
-            "generationConfig": {
-                "temperature": temperature,
-                "maxOutputTokens": max_output_tokens,
-                "responseMimeType": response_mime_type,
-            },
+            "generationConfig": generation_config,
         }
         request = Request(
             url,
             data=json.dumps(body).encode("utf-8"),
-            headers={"Content-Type": "application/json"},
+            headers={
+                "Content-Type": "application/json",
+                "x-goog-api-key": self.api_key,
+            },
             method="POST",
         )
 
@@ -75,6 +87,9 @@ class GeminiGenerateClient:
             details = exc.read().decode("utf-8", errors="replace")
             raise GeminiClientError(
                 f"Gemini request failed with HTTP {exc.code}: {details}") from exc
+        except TimeoutError as exc:
+            raise GeminiClientError(
+                f"Gemini request timed out after {self.timeout_seconds} seconds") from exc
         except URLError as exc:
             raise GeminiClientError(
                 f"Gemini request failed: {exc.reason}") from exc
@@ -119,12 +134,14 @@ class LLMClient:
         response_mime_type: str = "text/plain",
         temperature: float = 0.0,
         max_output_tokens: int = 1024,
+        thinking_budget: int | None = None,
     ) -> str:
         return self.client.generate(
             prompt,
             response_mime_type=response_mime_type,
             temperature=temperature,
             max_output_tokens=max_output_tokens,
+            thinking_budget=thinking_budget,
         )
 
 

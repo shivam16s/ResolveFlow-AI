@@ -9,6 +9,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+import backend.api.chat_routes as chat_routes  # noqa: E402
 from backend.api.chat_routes import (  # noqa: E402
     _cancellation_confirmation_response,
     _cancellation_options_response,
@@ -134,7 +135,48 @@ def test_second_cancel_becomes_confirmation_and_creates_request_once() -> None:
     assert "I will check" not in reply
 
 
+def test_cancellation_request_rolls_back_ticket_before_memory_fallback() -> None:
+    db_path = _make_db()
+    chat_routes._MEMORY_CANCELLATION_REQUESTS.pop("CUST-TEST", None)
+    with sqlite3.connect(db_path) as connection:
+        connection.execute(
+            """
+            CREATE TRIGGER fail_pending_cancellation
+            BEFORE UPDATE OF account_status ON customers
+            WHEN NEW.account_status = 'pending_cancellation'
+            BEGIN
+              SELECT RAISE(FAIL, 'simulated account update failure');
+            END
+            """
+        )
+
+    result = _create_cancellation_request("CUST-TEST", "Customer confirmed cancellation", db_path)
+    if result.get("persistence") != "memory_fallback":
+        raise AssertionError(f"sqlite failure should fall back to memory only after rollback: {result}")
+
+    with sqlite3.connect(db_path) as connection:
+        ticket_count = connection.execute(
+            """
+            SELECT COUNT(*)
+            FROM tickets
+            WHERE customer_id = ? AND issue_type = 'cancellation_request'
+            """,
+            ("CUST-TEST",),
+        ).fetchone()[0]
+        account_status = connection.execute(
+            "SELECT account_status FROM customers WHERE customer_id = ?",
+            ("CUST-TEST",),
+        ).fetchone()[0]
+
+    chat_routes._MEMORY_CANCELLATION_REQUESTS.pop("CUST-TEST", None)
+    if ticket_count != 0:
+        raise AssertionError(f"partial SQLite ticket should have rolled back: {ticket_count}")
+    if account_status != "active":
+        raise AssertionError(f"customer status should remain active after rollback: {account_status}")
+
+
 if __name__ == "__main__":
     test_cancellation_request_checks_tools_and_offers_choice()
     test_second_cancel_becomes_confirmation_and_creates_request_once()
+    test_cancellation_request_rolls_back_ticket_before_memory_fallback()
     print("chat cancellation flow tests passed")

@@ -60,6 +60,12 @@ class ResolutionRun:
 IssueResolver = Callable[[Issue], IssueResolution]
 
 
+class IssueResolverError(RuntimeError):
+    def __init__(self, intent: str) -> None:
+        self.intent = intent
+        super().__init__(f"resolver failed while processing issue {intent!r}")
+
+
 class SequentialResolutionLoop:
     """Runs one issue at a time from an IssueQueue."""
 
@@ -89,10 +95,7 @@ class SequentialResolutionLoop:
         try:
             return self.resolver(issue)
         except Exception as exc:
-            return IssueResolution(
-                status="escalated",
-                resolution=f"Resolver failed for {issue.intent}: {exc}",
-            )
+            raise IssueResolverError(issue.intent) from exc
 
     @staticmethod
     def _transition(issue: Issue, to_status: str, transitions: list[IssueTransition]) -> None:

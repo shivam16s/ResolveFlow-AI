@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import sqlite3
 from dataclasses import asdict, dataclass
 from datetime import date, datetime, time, timedelta
@@ -33,6 +34,15 @@ def _default_reference_date() -> str:
     if configured and configured.strip():
         return configured.strip()
     return DEMO_REFERENCE_DATE
+
+
+def _now_iso() -> str:
+    raw = _default_reference_date()
+    try:
+        value = datetime.fromisoformat(raw)
+    except ValueError:
+        value = datetime.combine(date.fromisoformat(raw), time.min)
+    return value.replace(microsecond=0).isoformat()
 
 
 @dataclass(frozen=True)
@@ -107,6 +117,8 @@ class OutageStatus:
     outage_cleared: bool
     affected_area: str | None
     checked_at: str
+    active_outage_count: int = 0
+    related_outages: list[dict] | None = None
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -545,19 +557,24 @@ def check_outage_status(
     checked_at = _reference_datetime(reference_date)
     with sqlite3.connect(db_path) as connection:
         connection.row_factory = sqlite3.Row
-        row = connection.execute(
+        rows = connection.execute(
             """
             SELECT outage_id, location, start_time, end_time, duration_hours, verified, affected_customers
             FROM outages
             WHERE lower(location) = lower(?)
               AND datetime(start_time) <= datetime(?)
-            ORDER BY datetime(start_time) DESC, outage_id DESC
-            LIMIT 1
+            ORDER BY
+              CASE
+                WHEN end_time IS NULL OR datetime(end_time) > datetime(?) THEN 0
+                ELSE 1
+              END,
+              datetime(start_time) DESC,
+              outage_id DESC
             """,
-            (normalized_location, checked_at.isoformat()),
-        ).fetchone()
+            (normalized_location, checked_at.isoformat(), checked_at.isoformat()),
+        ).fetchall()
 
-    if row is None:
+    if not rows:
         return OutageStatus(
             location=normalized_location,
             customer_id=normalized_customer_id,
@@ -572,13 +589,17 @@ def check_outage_status(
             outage_cleared=True,
             affected_area=None,
             checked_at=checked_at.isoformat(),
+            active_outage_count=0,
+            related_outages=[],
         ).to_dict()
 
+    row = rows[0]
     affected_customers = _json_list(row["affected_customers"])
     customer_affected = normalized_customer_id in affected_customers if normalized_customer_id else None
     end_time = row["end_time"]
     outage_cleared = end_time is not None and datetime.fromisoformat(
         end_time) <= checked_at
+    related_outages = [_outage_row_summary(outage, checked_at) for outage in rows]
     return OutageStatus(
         location=row["location"],
         customer_id=normalized_customer_id,
@@ -594,7 +615,26 @@ def check_outage_status(
         outage_cleared=outage_cleared,
         affected_area=row["location"],
         checked_at=checked_at.isoformat(),
+        active_outage_count=sum(
+            1 for outage in related_outages if outage["outage_cleared"] is False),
+        related_outages=related_outages,
     ).to_dict()
+
+
+def _outage_row_summary(row: sqlite3.Row, checked_at: datetime) -> dict:
+    end_time = row["end_time"]
+    outage_cleared = end_time is not None and datetime.fromisoformat(
+        end_time) <= checked_at
+    return {
+        "outage_id": row["outage_id"],
+        "location": row["location"],
+        "start_time": row["start_time"],
+        "end_time": end_time,
+        "duration_hours": float(row["duration_hours"]) if row["duration_hours"] is not None else None,
+        "verified": bool(row["verified"]),
+        "affected_customers": _json_list(row["affected_customers"]),
+        "outage_cleared": outage_cleared,
+    }
 
 
 def run_router_diagnostic(
@@ -762,11 +802,12 @@ def apply_credit(
             f"for path {validation.path}"
         )
 
-    applied_at = datetime.utcnow().replace(microsecond=0).isoformat()
+    applied_at = _now_iso()
     credit_id = f"CR-{uuid4().hex[:12].upper()}"
     with sqlite3.connect(db_path) as connection:
         connection.execute("PRAGMA foreign_keys = ON")
         connection.row_factory = sqlite3.Row
+        connection.execute("BEGIN IMMEDIATE")
         customer_row = connection.execute(
             "SELECT customer_id FROM customers WHERE customer_id = ?",
             (normalized_customer_id,),
@@ -789,29 +830,46 @@ def apply_credit(
                     f"invoice {normalized_invoice_id!r} was not found for customer {normalized_customer_id!r}"
                 )
 
-        connection.execute(
-            """
-            INSERT INTO credits (
-                credit_id,
-                customer_id,
-                amount,
-                reason,
-                policy_id,
-                applied_at,
-                applied_to_invoice
-            )
-            VALUES (?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                credit_id,
-                normalized_customer_id,
-                numeric_amount,
-                normalized_reason,
-                None,
-                applied_at,
-                normalized_invoice_id,
-            ),
+        _ensure_policy_reference(connection, validation.policy_name)
+        existing_credit = _find_existing_credit(
+            connection,
+            customer_id=normalized_customer_id,
+            amount=numeric_amount,
+            reason=normalized_reason,
+            applied_to_invoice=normalized_invoice_id,
         )
+        if existing_credit is not None:
+            credit_id = existing_credit["credit_id"]
+            applied_at = existing_credit["applied_at"]
+            if not existing_credit["policy_id"]:
+                connection.execute(
+                    "UPDATE credits SET policy_id = ? WHERE credit_id = ?",
+                    (validation.policy_name, credit_id),
+                )
+        else:
+            connection.execute(
+                """
+                INSERT INTO credits (
+                    credit_id,
+                    customer_id,
+                    amount,
+                    reason,
+                    policy_id,
+                    applied_at,
+                    applied_to_invoice
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    credit_id,
+                    normalized_customer_id,
+                    numeric_amount,
+                    normalized_reason,
+                    validation.policy_name,
+                    applied_at,
+                    normalized_invoice_id,
+                ),
+            )
 
     policy_status = "compliant" if validation.action == "apply_credit" else "non_compliant"
     return CreditApplicationResult(
@@ -828,6 +886,120 @@ def apply_credit(
         ujcs=validation.ujcs,
         policy_status=policy_status,
     ).to_dict()
+
+
+def _find_existing_credit(
+    connection: sqlite3.Connection,
+    *,
+    customer_id: str,
+    amount: float,
+    reason: str,
+    applied_to_invoice: str | None,
+) -> sqlite3.Row | None:
+    if applied_to_invoice is None:
+        return connection.execute(
+            """
+            SELECT credit_id, applied_at, policy_id
+            FROM credits
+            WHERE customer_id = ?
+              AND amount = ?
+              AND reason = ?
+              AND applied_to_invoice IS NULL
+            ORDER BY applied_at ASC, credit_id ASC
+            LIMIT 1
+            """,
+            (customer_id, amount, reason),
+        ).fetchone()
+    return connection.execute(
+        """
+        SELECT credit_id, applied_at, policy_id
+        FROM credits
+        WHERE customer_id = ?
+          AND amount = ?
+          AND reason = ?
+          AND applied_to_invoice = ?
+        ORDER BY applied_at ASC, credit_id ASC
+        LIMIT 1
+        """,
+        (customer_id, amount, reason, applied_to_invoice),
+    ).fetchone()
+
+
+def _ensure_policy_reference(connection: sqlite3.Connection, policy_name: str) -> None:
+    connection.execute(
+        """
+        INSERT OR IGNORE INTO policies(policy_id, policy_name, policy_text, effective_date, version)
+        VALUES (?, ?, ?, ?, ?)
+        """,
+        (
+            policy_name,
+            policy_name,
+            f"Runtime policy graph authorization for {policy_name}.",
+            "2026-01-01",
+            1,
+        ),
+    )
+
+
+def _ensure_plan_change_columns(connection: sqlite3.Connection) -> None:
+    columns = {
+        row["name"]
+        for row in connection.execute("PRAGMA table_info(customers)").fetchall()
+    }
+    additions = {
+        "pending_plan_id": "ALTER TABLE customers ADD COLUMN pending_plan_id TEXT REFERENCES plans(plan_id)",
+        "pending_plan_effective_date": "ALTER TABLE customers ADD COLUMN pending_plan_effective_date DATE",
+        "pending_plan_requested_at": "ALTER TABLE customers ADD COLUMN pending_plan_requested_at DATETIME",
+    }
+    for column_name, ddl in additions.items():
+        if column_name not in columns:
+            connection.execute(ddl)
+
+
+def _ensure_ticket_appointment_columns(connection: sqlite3.Connection) -> None:
+    columns = {
+        row["name"]
+        for row in connection.execute("PRAGMA table_info(tickets)").fetchall()
+    }
+    additions = {
+        "appointment_id": "ALTER TABLE tickets ADD COLUMN appointment_id TEXT UNIQUE",
+        "appointment_slot": "ALTER TABLE tickets ADD COLUMN appointment_slot TEXT",
+        "technician_name": "ALTER TABLE tickets ADD COLUMN technician_name TEXT",
+        "scheduled_at": "ALTER TABLE tickets ADD COLUMN scheduled_at DATETIME",
+    }
+    for column_name, ddl in additions.items():
+        if column_name not in columns:
+            connection.execute(ddl)
+
+
+def _normalize_appointment_slot(time_slot: str) -> str:
+    normalized = " ".join(time_slot.split())
+    match = re.fullmatch(
+        r"(\d{4}-\d{2}-\d{2})[ T](\d{2}:\d{2})-(\d{2}:\d{2})",
+        normalized,
+    )
+    if match is None:
+        raise ValueError(
+            "time_slot must use format YYYY-MM-DD HH:MM-HH:MM")
+    day, start_text, end_text = match.groups()
+    try:
+        start_dt = datetime.fromisoformat(f"{day}T{start_text}")
+        end_dt = datetime.fromisoformat(f"{day}T{end_text}")
+    except ValueError as exc:
+        raise ValueError(
+            "time_slot must contain a valid date and 24-hour time range") from exc
+    if end_dt <= start_dt:
+        raise ValueError("time_slot end time must be after start time")
+    if (end_dt - start_dt) > timedelta(hours=4):
+        raise ValueError("time_slot window must be 4 hours or shorter")
+    reference_date = date.fromisoformat(_default_reference_date())
+    if start_dt.date() < reference_date:
+        raise ValueError("time_slot date must not be in the past")
+    return f"{day} {start_text}-{end_text}"
+
+
+def _appointment_id_for_ticket(ticket_id: str) -> str:
+    return f"APT-{ticket_id.removeprefix('TKT-')}"
 
 
 def create_ticket(
@@ -879,7 +1051,7 @@ def create_ticket(
             )
 
     ticket_id = f"TKT-{uuid4().hex[:12].upper()}"
-    created_at = datetime.utcnow().replace(microsecond=0).isoformat()
+    created_at = _now_iso()
     with sqlite3.connect(db_path) as connection:
         connection.execute("PRAGMA foreign_keys = ON")
         connection.row_factory = sqlite3.Row
@@ -952,6 +1124,7 @@ def schedule_technician(
         raise ValueError("policy_context must be a dict")
     if ticket_id is not None and not normalized_ticket_id:
         raise ValueError("ticket_id must not be empty when provided")
+    normalized_time_slot = _normalize_appointment_slot(normalized_time_slot)
 
     validation = PolicyGraphValidator().authorize_action(
         normalized_policy_name,
@@ -964,11 +1137,12 @@ def schedule_technician(
             f"policy path {validation.path} did not require a linked ticket"
         )
 
-    scheduled_at = datetime.utcnow().replace(microsecond=0).isoformat()
+    scheduled_at = _now_iso()
     ticket_created = False
     with sqlite3.connect(db_path) as connection:
         connection.execute("PRAGMA foreign_keys = ON")
         connection.row_factory = sqlite3.Row
+        _ensure_ticket_appointment_columns(connection)
         customer_row = connection.execute(
             "SELECT customer_id FROM customers WHERE customer_id = ?",
             (normalized_customer_id,),
@@ -979,6 +1153,9 @@ def schedule_technician(
         if normalized_ticket_id is None:
             normalized_ticket_id = f"TKT-{uuid4().hex[:12].upper()}"
             ticket_created = True
+            appointment_id = _appointment_id_for_ticket(normalized_ticket_id)
+            technician_name = _technician_name_for(
+                normalized_customer_id, normalized_time_slot)
             connection.execute(
                 """
                 INSERT INTO tickets (
@@ -987,9 +1164,13 @@ def schedule_technician(
                     issue_type,
                     status,
                     priority,
-                    created_at
+                    created_at,
+                    appointment_id,
+                    appointment_slot,
+                    technician_name,
+                    scheduled_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     normalized_ticket_id,
@@ -998,12 +1179,16 @@ def schedule_technician(
                     "in_progress",
                     "high",
                     scheduled_at,
+                    appointment_id,
+                    normalized_time_slot,
+                    technician_name,
+                    scheduled_at,
                 ),
             )
         else:
             ticket_row = connection.execute(
                 """
-                SELECT ticket_id, customer_id
+                SELECT ticket_id, customer_id, appointment_id
                 FROM tickets
                 WHERE ticket_id = ?
                 """,
@@ -1015,35 +1200,53 @@ def schedule_technician(
                 raise ValueError(
                     f"ticket {normalized_ticket_id!r} does not belong to customer {normalized_customer_id!r}"
                 )
-            connection.execute(
-                """
-                UPDATE tickets
-                SET status = 'in_progress',
-                    priority = CASE
-                        WHEN priority IN ('critical', 'high') THEN priority
-                        ELSE 'high'
-                    END
-                WHERE ticket_id = ?
-                """,
-                (normalized_ticket_id,),
-            )
+            if ticket_row["appointment_id"] is None:
+                appointment_id = _appointment_id_for_ticket(
+                    normalized_ticket_id)
+                technician_name = _technician_name_for(
+                    normalized_customer_id, normalized_time_slot)
+                connection.execute(
+                    """
+                    UPDATE tickets
+                    SET status = 'in_progress',
+                        priority = CASE
+                            WHEN priority IN ('critical', 'high') THEN priority
+                            ELSE 'high'
+                        END,
+                        appointment_id = ?,
+                        appointment_slot = ?,
+                        technician_name = ?,
+                        scheduled_at = ?
+                    WHERE ticket_id = ?
+                    """,
+                    (
+                        appointment_id,
+                        normalized_time_slot,
+                        technician_name,
+                        scheduled_at,
+                        normalized_ticket_id,
+                    ),
+                )
 
-        ticket_status = connection.execute(
-            "SELECT status FROM tickets WHERE ticket_id = ?",
+        appointment = connection.execute(
+            """
+            SELECT status, appointment_id, appointment_slot, technician_name, scheduled_at
+            FROM tickets
+            WHERE ticket_id = ?
+            """,
             (normalized_ticket_id,),
-        ).fetchone()["status"]
+        ).fetchone()
 
     return TechnicianScheduleResult(
-        appointment_id=f"APT-{normalized_ticket_id.removeprefix('TKT-')}",
+        appointment_id=appointment["appointment_id"],
         customer_id=normalized_customer_id,
-        time_slot=normalized_time_slot,
+        time_slot=appointment["appointment_slot"],
         slot_confirmed=True,
-        technician_name=_technician_name_for(
-            normalized_customer_id, normalized_time_slot),
+        technician_name=appointment["technician_name"],
         ticket_id=normalized_ticket_id,
         ticket_created=ticket_created,
-        ticket_status=ticket_status,
-        scheduled_at=scheduled_at,
+        ticket_status=appointment["status"],
+        scheduled_at=appointment["scheduled_at"],
         policy_name=validation.policy_name,
         policy_action=validation.action,
         policy_action_args=validation.action_args,
@@ -1086,11 +1289,12 @@ def change_plan(
         effective_date=effective_date,
         effective_policy=effective_policy,
     )
-    changed_at = datetime.utcnow().replace(microsecond=0).isoformat()
+    changed_at = _now_iso()
 
     with sqlite3.connect(db_path) as connection:
         connection.execute("PRAGMA foreign_keys = ON")
         connection.row_factory = sqlite3.Row
+        _ensure_plan_change_columns(connection)
         customer_row = connection.execute(
             """
             SELECT
@@ -1137,14 +1341,34 @@ def change_plan(
                 f"DAG requires {expected_change_type!r} via path {validation.path}"
             )
 
-        connection.execute(
-            """
-            UPDATE customers
-            SET plan_id = ?
-            WHERE customer_id = ?
-            """,
-            (normalized_new_plan_id, normalized_customer_id),
-        )
+        if effective_policy == "immediate":
+            connection.execute(
+                """
+                UPDATE customers
+                SET plan_id = ?,
+                    pending_plan_id = NULL,
+                    pending_plan_effective_date = NULL,
+                    pending_plan_requested_at = NULL
+                WHERE customer_id = ?
+                """,
+                (normalized_new_plan_id, normalized_customer_id),
+            )
+        else:
+            connection.execute(
+                """
+                UPDATE customers
+                SET pending_plan_id = ?,
+                    pending_plan_effective_date = ?,
+                    pending_plan_requested_at = ?
+                WHERE customer_id = ?
+                """,
+                (
+                    normalized_new_plan_id,
+                    normalized_effective_date,
+                    changed_at,
+                    normalized_customer_id,
+                ),
+            )
 
     fee_disclosure_required = bool(
         validation.action_args.get("fee_disclosure_required", False))
@@ -1186,7 +1410,7 @@ def generate_handoff_summary(
     )
     if context_card is None:
         return None
-    generated_at = datetime.utcnow().replace(microsecond=0).isoformat()
+    generated_at = _now_iso()
 
     return HandoffSummaryResult(
         handoff_summary_id=f"HND-SUM-{uuid4().hex[:12].upper()}",
@@ -1226,7 +1450,7 @@ def generate_context_card(
     if handoff_reason is not None and not normalized_handoff_reason:
         raise ValueError("handoff_reason must not be empty when provided")
 
-    generated_at = datetime.utcnow().replace(microsecond=0).isoformat()
+    generated_at = _now_iso()
     with sqlite3.connect(db_path) as connection:
         connection.row_factory = sqlite3.Row
         conversation_row = connection.execute(
@@ -1601,7 +1825,7 @@ def generate_audit_log(
     normalized_health_score = draft["health_score"]
     normalized_policy_status = draft["policy_status"]
 
-    created_at = datetime.utcnow().replace(microsecond=0).isoformat()
+    created_at = _now_iso()
     with sqlite3.connect(db_path) as connection:
         connection.execute("PRAGMA foreign_keys = ON")
         connection.row_factory = sqlite3.Row

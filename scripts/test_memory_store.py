@@ -141,11 +141,98 @@ def test_hybrid_search_filters_by_customer_and_memory_type() -> None:
     assert "Tamil" in results[0].document
 
 
+def test_hybrid_search_bounds_bm25_candidate_fetches() -> None:
+    class FakeCollection:
+        def __init__(self) -> None:
+            self.get_calls = []
+
+        def count(self) -> int:
+            return 1000
+
+        def query(self, **kwargs):
+            return {
+                "ids": [["mem-vector"]],
+                "documents": [["Customer said: router diagnostic completed"]],
+                "metadatas": [[{"customer_id": "CUST-1001", "memory_type": "episodic"}]],
+                "distances": [[0.42]],
+            }
+
+        def get(self, **kwargs):
+            self.get_calls.append(kwargs)
+            if kwargs.get("limit") is None:
+                raise AssertionError(f"unbounded Chroma get call: {kwargs}")
+            if not kwargs.get("where_document"):
+                raise AssertionError(f"BM25 candidate fetch must use where_document: {kwargs}")
+            return {
+                "ids": ["mem-bm25"],
+                "documents": ["Customer said: duplicate charge payment appeared twice"],
+                "metadatas": [{"customer_id": "CUST-1001", "memory_type": "episodic"}],
+            }
+
+    fake_collection = FakeCollection()
+    store = object.__new__(ChromaMemoryStore)
+    store.collection = fake_collection
+
+    results = store.hybrid_search(
+        "duplicate charge payment",
+        customer_id="CUST-1001",
+        top_k=2,
+    )
+
+    if not fake_collection.get_calls:
+        raise AssertionError("BM25 candidate fetch was not attempted")
+    if any("limit" not in call or call["limit"] < 2 for call in fake_collection.get_calls):
+        raise AssertionError(f"BM25 calls should be bounded: {fake_collection.get_calls}")
+    if not any(result.memory_id == "mem-bm25" and result.bm25_rank == 1 for result in results):
+        raise AssertionError(f"bounded BM25 candidate was not fused: {[result.to_dict() for result in results]}")
+
+
+def test_hybrid_search_does_not_search_boolean_joiners_as_bm25_terms() -> None:
+    class FakeCollection:
+        def __init__(self) -> None:
+            self.get_terms = []
+
+        def count(self) -> int:
+            return 10
+
+        def query(self, **kwargs):
+            if " OR " not in kwargs["query_texts"][0]:
+                raise AssertionError(f"vector query should preserve expanded text: {kwargs}")
+            return {
+                "ids": [["mem-vector"]],
+                "documents": [["Customer said: duplicate charge payment appeared twice"]],
+                "metadatas": [[{"customer_id": "CUST-1001", "memory_type": "episodic"}]],
+                "distances": [[0.31]],
+            }
+
+        def get(self, **kwargs):
+            term = kwargs.get("where_document", {}).get("$contains")
+            self.get_terms.append(term)
+            if term == "or":
+                raise AssertionError(f"BM25 should not search Boolean joiner terms: {self.get_terms}")
+            return {"ids": [], "documents": [], "metadatas": []}
+
+    fake_collection = FakeCollection()
+    store = object.__new__(ChromaMemoryStore)
+    store.collection = fake_collection
+
+    store.hybrid_search(
+        "duplicate charge OR payment OR invoice",
+        customer_id="CUST-1001",
+        top_k=2,
+    )
+
+    if "or" in fake_collection.get_terms:
+        raise AssertionError(f"BM25 candidate terms should omit 'or': {fake_collection.get_terms}")
+
+
 def main() -> None:
     test_store_units_embeds_and_persists_metadata_in_chromadb()
     test_store_units_upsert_is_idempotent()
     test_hybrid_search_combines_vector_and_bm25_rankings()
     test_hybrid_search_filters_by_customer_and_memory_type()
+    test_hybrid_search_bounds_bm25_candidate_fetches()
+    test_hybrid_search_does_not_search_boolean_joiners_as_bm25_terms()
     print("PASS ChromaDB memory store tests")
 
 

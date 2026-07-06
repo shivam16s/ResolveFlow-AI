@@ -39,8 +39,8 @@ def assert_human_review_packets_capture_expected_and_observed_state() -> None:
     evaluation = run_evaluation(k=1, db_path=db_path)
     packets = build_human_review_packets(evaluation)
 
-    if len(packets) != 13:
-        raise AssertionError(f"expected 13 packets for k=1, got {len(packets)}")
+    if len(packets) != 30:
+        raise AssertionError(f"expected 30 packets for k=1, got {len(packets)}")
     duplicate = next(packet for packet in packets if packet.scenario_id == "case_02_duplicate_charge")
     payload = duplicate.to_dict()
     if payload["review_id"] != "review-p01-case_02_duplicate_charge":

@@ -5,7 +5,13 @@ from dataclasses import asdict, dataclass, field
 from typing import Iterable
 
 from .intent_classifier import INTENT_PRIORITY, IntentClassification
-from .slot_schema import REQUIRED_SLOTS, detect_missing_required_slots, generate_targeted_question, prioritize_slot
+from .slot_schema import (
+    REQUIRED_SLOTS,
+    _slot_value_present,
+    detect_missing_required_slots,
+    generate_targeted_question,
+    prioritize_slot,
+)
 
 
 IssueStatus = str
@@ -120,7 +126,8 @@ def slot_progress_for_issue(issue: Issue, slots: dict[str, object] | None = None
 def _normalize_queue_intents(intents: Iterable[str]) -> list[str]:
     unique_intents = []
     seen = set()
-    for intent in intents:
+    for raw_intent in intents:
+        intent = _coerce_queue_intent(raw_intent)
         if intent in seen:
             continue
         seen.add(intent)
@@ -136,9 +143,12 @@ def _normalize_queue_intents(intents: Iterable[str]) -> list[str]:
     return sorted(unique_intents, key=lambda intent: INTENT_PRIORITY[intent])
 
 
+def _coerce_queue_intent(intent: object) -> str:
+    normalized = str(intent or "").strip()
+    if normalized in REQUIRED_SLOTS and normalized in INTENT_PRIORITY:
+        return normalized
+    return "general_query"
+
+
 def _slot_has_value(value: object) -> bool:
-    if value is None:
-        return False
-    if isinstance(value, str):
-        return bool(value.strip())
-    return True
+    return _slot_value_present(value)

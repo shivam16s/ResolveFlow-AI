@@ -1,0 +1,17 @@
+[flake8]
+extend-ignore = E128,E501,W503,W504
+exclude =
+    .git,
+    .venv,
+    data,
+    frontend,
+    scratch,
+    __pycache__
+per-file-ignores =
+    scripts/test_demo_chat_response.py:E402
+    scripts/test_memory_graph.py:E402
+    scripts/test_memory_reader.py:E402
+    scripts/test_openie_extraction.py:E402
+    scripts/test_policy_ingestion.py:E402
+    scripts/test_policy_retrieval.py:E402
+    scripts/test_guided_action.py:E731

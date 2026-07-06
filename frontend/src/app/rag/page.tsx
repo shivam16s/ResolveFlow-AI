@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useRef, useState } from "react";
 import useSWR from "swr";
 import { motion, AnimatePresence } from "framer-motion";
 import { Search, Brain, FileText, Network, CheckCircle2, XCircle, AlertCircle, RefreshCw } from "lucide-react";
@@ -67,21 +67,34 @@ function MemorySearchTab() {
   const [customerId, setCustomerId] = useState("");
   const [isSearching, setIsSearching] = useState(false);
   const [results, setResults] = useState<MemorySearchResult[]>([]);
+  const [searchError, setSearchError] = useState<string | null>(null);
+  const searchInFlightRef = useRef(false);
 
   const { data: customersData } = useSWR("rag-customers", () => api.rag.customers());
   const customers = customersData?.customers ?? [];
 
   async function handleSearch() {
-    if (!query.trim() || !customerId) return;
+    if (searchInFlightRef.current || !query.trim() || !customerId) return;
+    searchInFlightRef.current = true;
+    setSearchError(null);
     setIsSearching(true);
     try {
       const res = await api.rag.memorySearch(customerId, query, 5);
       setResults(res.results);
     } catch (err) {
       console.error(err);
+      setSearchError("Could not load memory results. Check that the backend RAG service is running and try again.");
+      setResults([]);
     } finally {
+      searchInFlightRef.current = false;
       setIsSearching(false);
     }
+  }
+
+  function handleCustomerChange(nextCustomerId: string) {
+    setCustomerId(nextCustomerId);
+    setResults([]);
+    setSearchError(null);
   }
 
   return (
@@ -91,7 +104,7 @@ function MemorySearchTab() {
           <label className="block text-xs font-semibold mb-2" style={{ color: "var(--text-muted)" }}>CUSTOMER</label>
           <select
             value={customerId}
-            onChange={(e) => setCustomerId(e.target.value)}
+            onChange={(e) => handleCustomerChange(e.target.value)}
             className="w-full px-3 py-2 text-sm rounded-lg outline-none transition-all focus:ring-1"
             style={{ colorScheme: "dark", background: "var(--surface-3)", border: "1px solid var(--border)", color: "var(--text-primary)", "--tw-ring-color": "var(--accent)" } as React.CSSProperties}
           >
@@ -109,7 +122,11 @@ function MemorySearchTab() {
               <input
                 value={query}
                 onChange={(e) => setQuery(e.target.value)}
-                onKeyDown={(e) => e.key === "Enter" && handleSearch()}
+                onKeyDown={(e) => {
+                  if (e.key !== "Enter" || e.shiftKey || e.nativeEvent.isComposing) return;
+                  e.preventDefault();
+                  handleSearch();
+                }}
                 placeholder="Search vector embeddings + NetworkX PPR graph..."
                 className="w-full pl-9 pr-3 py-2 text-sm rounded-lg outline-none transition-all focus:ring-1"
                 style={{ background: "var(--surface-3)", border: "1px solid var(--border)", color: "var(--text-primary)", "--tw-ring-color": "var(--accent)" } as React.CSSProperties}
@@ -128,6 +145,11 @@ function MemorySearchTab() {
       </GlassPanel>
 
       <div className="grid gap-4">
+        {searchError && (
+          <GlassPanel className="p-4">
+            <p className="text-sm" style={{ color: "#fca5a5" }}>{searchError}</p>
+          </GlassPanel>
+        )}
         {results.map((result) => (
           <GlassPanel key={result.memory_id} className="p-5 flex flex-col gap-3">
             <div className="flex items-start justify-between gap-4">

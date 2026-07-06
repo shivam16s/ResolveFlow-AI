@@ -11,6 +11,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 from backend.db import reset_to_initial_state  # noqa: E402
+from backend.db.init_db import initialize_database  # noqa: E402
 from backend.db.validation import assert_foundation_ready  # noqa: E402
 
 
@@ -37,13 +38,14 @@ def assert_reset_restores_seed_baseline() -> None:
         "invoices": 20,
         "outages": 10,
         "tickets": 0,
-        "policies": 0,
+        "policies": 8,
         "diagnostics": 0,
         "credits": 0,
         "audit_logs": 0,
         "human_handoff_queue": 0,
         "memory_store": 0,
         "conversations": 0,
+        "telemetry": 0,
     }
     if second["table_counts"] != expected_counts:
         raise AssertionError(f"reset counts wrong: {second}")
@@ -63,6 +65,17 @@ def assert_reset_is_idempotent() -> None:
     second = reset_to_initial_state(db_path)
     if first["table_counts"] != second["table_counts"]:
         raise AssertionError(f"reset should be idempotent: {first} {second}")
+
+
+def assert_database_setup_uses_crash_safe_journal_mode() -> None:
+    db_path = Path(tempfile.mkdtemp(prefix="resolveflow-journal-")) / "resolveflow.db"
+    initialize_database(db_path)
+    if _journal_mode(db_path) != "wal":
+        raise AssertionError(f"initialize_database should use WAL, got {_journal_mode(db_path)!r}")
+
+    reset_to_initial_state(db_path)
+    if _journal_mode(db_path) != "wal":
+        raise AssertionError(f"reset/seed should preserve WAL, got {_journal_mode(db_path)!r}")
 
 
 def _dirty_database(db_path: Path) -> None:
@@ -162,6 +175,7 @@ def _counts(db_path: Path) -> dict[str, int]:
         "human_handoff_queue",
         "memory_store",
         "conversations",
+        "telemetry",
     ]
     with sqlite3.connect(db_path) as connection:
         return {table: connection.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0] for table in tables}
@@ -175,9 +189,15 @@ def _customer_plan(db_path: Path, customer_id: str) -> str:
         ).fetchone()[0]
 
 
+def _journal_mode(db_path: Path) -> str:
+    with sqlite3.connect(db_path) as connection:
+        return str(connection.execute("PRAGMA journal_mode").fetchone()[0]).lower()
+
+
 def main() -> None:
     assert_reset_restores_seed_baseline()
     assert_reset_is_idempotent()
+    assert_database_setup_uses_crash_safe_journal_mode()
     print("db reset tests passed")
 
 

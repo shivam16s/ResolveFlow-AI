@@ -11,7 +11,7 @@ from uuid import uuid4
 # NOTE: This module holds the dashboard controller *functions*. They are mounted
 # as routes by backend/api/routes.py (the single routing surface) — there is no
 # router here, so endpoints can only ever be registered in one place.
-from fastapi import HTTPException, Request
+from fastapi import BackgroundTasks, HTTPException, Request
 
 from backend.evaluation import (
     compute_business_adherence,
@@ -22,8 +22,6 @@ from backend.evaluation import (
 from backend.tools import generate_context_card
 from backend.agent.llm_client import LLMClient, GeminiClientError
 
-
-
 ISSUE_COLORS = ["#6366f1", "#10b981",
                 "#f59e0b", "#ef4444", "#14b8a6", "#a855f7"]
 HEALTH_BUCKETS = [
@@ -33,6 +31,8 @@ HEALTH_BUCKETS = [
     ("70-89", 70, 89, "#10b981"),
     ("90-100", 90, 100, "#34d399"),
 ]
+_POLICY_COMPLIANCE_PCT_CACHE: dict[tuple[str, int, int], float | None] = {}
+
 
 def dashboard_overview(request: Request) -> dict[str, Any]:
     db_path = Path(request.app.state.db_path)
@@ -206,24 +206,59 @@ def evaluation_results(request: Request) -> dict[str, Any]:
     return _evaluation_report(evaluation, run_id=run_id, run_at=run_at, db_path=Path(request.app.state.db_path))
 
 
-def evaluation_run(request: Request) -> dict[str, Any]:
-    result = run_evaluation(k=5)
+def evaluation_run(
+    request: Request,
+    background_tasks: BackgroundTasks | None = None,
+    *,
+    live_llm: bool = False,
+) -> dict[str, Any]:
     run_id = f"eval_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{uuid4().hex[:6]}"
+    run_at = datetime.now().isoformat()
     output_path = _data_dir(request) / f"{run_id}.json"
-    output_path.write_text(json.dumps(
-        result, indent=2, sort_keys=True), encoding="utf-8")
+    db_path = Path(request.app.state.db_path)
+    if background_tasks is not None:
+        background_tasks.add_task(
+            _write_evaluation_run,
+            db_path=db_path,
+            output_path=output_path,
+            live_llm=live_llm,
+        )
+        return {
+            "job_id": run_id,
+            "run_id": run_id,
+            "status": "queued",
+            "live_llm": live_llm,
+            "result_path": str(output_path),
+            "run_at": run_at,
+        }
+
+    result = _write_evaluation_run(db_path=db_path, output_path=output_path, live_llm=live_llm)
     return {
         "job_id": run_id,
         "run_id": run_id,
         "status": "completed",
+        "live_llm": live_llm,
         "result_path": str(output_path),
         "summary": _evaluation_report(
             result,
             run_id=run_id,
-            run_at=datetime.now().isoformat(),
-            db_path=Path(request.app.state.db_path),
+            run_at=run_at,
+            db_path=db_path,
         ),
     }
+
+
+def _write_evaluation_run(*, db_path: Path, output_path: Path, live_llm: bool = False) -> dict[str, Any]:
+    result = run_evaluation(
+        k=5,
+        db_path=db_path,
+        use_live_llm=live_llm,
+        temperature_schedule=[0.3, 0.45, 0.6, 0.75, 0.9] if live_llm else None,
+    )
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    output_path.write_text(json.dumps(
+        result, indent=2, sort_keys=True), encoding="utf-8")
+    return result
 
 
 def _connect(db_path: Path) -> sqlite3.Connection:
@@ -479,17 +514,73 @@ def _health_timeline(raw_scores: str | None, audit: sqlite3.Row | None) -> list[
             label = str(item.get("label") or item.get(
                 "reason") or "Conversation health")
             turn = int(item.get("turn") or index)
+            sentiment_score = _timeline_sentiment_score(
+                item.get("sentiment_score", item.get("sentiment")), label, score)
         else:
             score = item
             label = "Conversation health"
             turn = index
+            sentiment_score = _timeline_sentiment_score(None, label, score)
         if isinstance(score, (int, float)):
             points.append(
-                {"turn": turn, "score": float(score), "label": label})
+                {
+                    "turn": turn,
+                    "score": float(score),
+                    "label": label,
+                    "sentiment_score": sentiment_score,
+                    "sentiment_label": _timeline_sentiment_label(sentiment_score),
+                }
+            )
     if not points and audit is not None and isinstance(audit["health_score"], (int, float)):
-        points.append({"turn": 1, "score": float(
-            audit["health_score"]), "label": "Audit health score"})
+        score = float(audit["health_score"])
+        sentiment_score = _timeline_sentiment_score(None, "Audit health score", score)
+        points.append({
+            "turn": 1,
+            "score": score,
+            "label": "Audit health score",
+            "sentiment_score": sentiment_score,
+            "sentiment_label": _timeline_sentiment_label(sentiment_score),
+        })
     return points
+
+
+def _timeline_sentiment_score(raw_value: Any, label: str, health_score: Any) -> float:
+    if isinstance(raw_value, (int, float)):
+        score = float(raw_value)
+        return round(max(0.0, min(1.0, score / 100 if score > 1 else score)), 2)
+    if isinstance(raw_value, str):
+        normalized = raw_value.strip().lower()
+        label_scores = {
+            "angry": 0.1,
+            "hostile": 0.1,
+            "frustrated": 0.25,
+            "negative": 0.3,
+            "neutral": 0.65,
+            "calm": 0.78,
+            "positive": 0.9,
+        }
+        if normalized in label_scores:
+            return label_scores[normalized]
+    text = label.lower()
+    if any(term in text for term in ("angry", "furious", "hostile", "cancellation")):
+        return 0.12
+    if any(term in text for term in ("loop", "waiting", "risk", "frustrated")):
+        return 0.35
+    if any(term in text for term in ("acknowledged", "corrected", "verified", "resolved", "recovered")):
+        return 0.78
+    if isinstance(health_score, (int, float)):
+        return round(max(0.0, min(1.0, float(health_score) / 100)), 2)
+    return 0.65
+
+
+def _timeline_sentiment_label(score: float) -> str:
+    if score < 0.25:
+        return "angry"
+    if score < 0.5:
+        return "frustrated"
+    if score < 0.75:
+        return "neutral"
+    return "positive"
 
 
 def _guided_action_events(tools: list[dict[str, Any]], audit: sqlite3.Row | None) -> list[dict[str, Any]]:
@@ -610,15 +701,16 @@ def _evaluation_report(
         )
 
     pass_rate = float(evaluation.get("success_rate") or 0)
-    policy_compliance = _policy_compliance_from_audit_logs(
-        db_path) if db_path is not None else None
+    policy_compliance = (
+        round(sum(item["policy_compliance"]
+              for item in scenarios) / len(scenarios), 4)
+        if scenarios
+        else None
+    )
+    if policy_compliance is None and db_path is not None:
+        policy_compliance = _policy_compliance_from_audit_logs(db_path)
     if policy_compliance is None:
-        policy_compliance = (
-            round(sum(item["policy_compliance"]
-                  for item in scenarios) / len(scenarios), 4)
-            if scenarios
-            else 0
-        )
+        policy_compliance = 0
     ragas_context_recall = float(ragas_report.get("average_context_recall") or 0)
     ragas_context_precision = float(ragas_report.get("average_context_precision") or 0)
     return {
@@ -631,8 +723,37 @@ def _evaluation_report(
         "avg_ragas_context_recall": round(ragas_context_recall, 4),
         "avg_ragas_context_precision": round(ragas_context_precision, 4),
         "business_adherence": _business_adherence_report(evaluation),
+        "temperature_results": _temperature_results(results),
         "scenarios": scenarios,
     }
+
+
+def _temperature_results(results: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    grouped: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    for result in results:
+        temperature = result.get("temperature")
+        label = "deterministic" if temperature is None else f"{float(temperature):.2f}"
+        grouped[label].append(result)
+    rows = []
+    for label, items in sorted(grouped.items()):
+        if not items:
+            continue
+        passed = sum(1 for item in items if item.get("passed") is True)
+        temperatures = [
+            item.get("temperature")
+            for item in items
+            if isinstance(item.get("temperature"), (int, float))
+        ]
+        rows.append({
+            "temperature": None if label == "deterministic" else round(float(label), 2),
+            "label": label,
+            "runs": len(items),
+            "pass_rate": round(passed / len(items), 4),
+            "avg_score": round(sum(float(item.get("score") or 0) for item in items) / len(items), 4),
+            "pass_indices": sorted({int(item.get("pass_index") or 0) for item in items}),
+            "source": "live_llm" if temperatures else "deterministic",
+        })
+    return rows
 
 
 def _business_adherence_report(evaluation: dict[str, Any]) -> dict[str, Any] | None:
@@ -749,16 +870,39 @@ def _latest_policy_compliance_pct(db_path: Path) -> float | None:
     if latest is None:
         return None
     try:
+        stat = latest.stat()
+    except OSError:
+        return None
+    cache_key = (str(db_path.resolve()), stat.st_mtime_ns, stat.st_size)
+    if cache_key in _POLICY_COMPLIANCE_PCT_CACHE:
+        return _POLICY_COMPLIANCE_PCT_CACHE[cache_key]
+
+    audit_score = _policy_compliance_from_audit_logs(db_path)
+    if audit_score is not None:
+        value = round(audit_score * 100, 1)
+        _POLICY_COMPLIANCE_PCT_CACHE.clear()
+        _POLICY_COMPLIANCE_PCT_CACHE[cache_key] = value
+        return value
+
+    try:
         evaluation = json.loads(latest.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
         return None
-    report = _evaluation_report(
-        evaluation,
-        run_id=latest.stem,
-        run_at=datetime.fromtimestamp(latest.stat().st_mtime).isoformat(),
-        db_path=db_path,
-    )
-    return round(float(report["avg_policy_compliance"]) * 100, 1)
+    value = _policy_compliance_pct_from_evaluation(evaluation)
+    _POLICY_COMPLIANCE_PCT_CACHE.clear()
+    _POLICY_COMPLIANCE_PCT_CACHE[cache_key] = value
+    return value
+
+
+def _policy_compliance_pct_from_evaluation(evaluation: dict[str, Any]) -> float | None:
+    results = [item for item in evaluation.get(
+        "results", []) if isinstance(item, dict)]
+    if not results:
+        return None
+    scores = _scenario_policy_scores(results)
+    if not scores:
+        return None
+    return round((sum(scores.values()) / len(scores)) * 100, 1)
 
 
 def _data_dir(request: Request) -> Path:
@@ -804,15 +948,23 @@ def dashboard_insights(request: Request) -> dict[str, Any]:
                     intents_list.append(json.loads(row[1]))
                 except Exception:
                     pass
-        
+
     prompt = "Analyze these recent customer intents and generate a 3-sentence Root Cause Analysis for administrators. Do not use markdown:\n" + json.dumps(intents_list)
     try:
         client = LLMClient()
         analysis = client.generate(prompt, temperature=0.7)
-    except GeminiClientError:
-        analysis = "We are seeing a 40% spike in cancellations in the Northern Region due to Fiber network outages. Recommend proactively crediting affected users $10 to prevent further churn."
-        
-    return {"insights": analysis}
+        return {"insights": analysis, "source": "gemini", "fallback": False}
+    except GeminiClientError as exc:
+        analysis = (
+            "Fallback insight: Gemini synthesis is unavailable, so this is a deterministic summary. "
+            "Review the recent intent mix manually before taking action."
+        )
+        return {
+            "insights": analysis,
+            "source": "deterministic_fallback",
+            "fallback": True,
+            "error": exc.__class__.__name__,
+        }
 
 
 def _pct(value: int, total: int) -> float:

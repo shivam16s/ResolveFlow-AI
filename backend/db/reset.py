@@ -10,6 +10,7 @@ from .seed_outages import seed_outages
 
 
 RESET_TABLE_ORDER = [
+    "telemetry",
     "human_handoff_queue",
     "audit_logs",
     "credits",
@@ -39,6 +40,7 @@ BASELINE_TABLES = [
     "human_handoff_queue",
     "memory_store",
     "conversations",
+    "telemetry",
 ]
 
 
@@ -77,7 +79,7 @@ def reset_to_initial_state(db_path: Path = DEFAULT_DB_PATH) -> dict:
 def _clear_tables(db_path: Path) -> None:
     with sqlite3.connect(db_path) as connection:
         connection.execute("PRAGMA foreign_keys = ON")
-        connection.execute("PRAGMA journal_mode = MEMORY")
+        connection.execute("PRAGMA journal_mode = WAL")
         for table_name in RESET_TABLE_ORDER:
             connection.execute(f"DELETE FROM {table_name}")
 

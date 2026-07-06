@@ -186,7 +186,6 @@ def assert_sentiment_prompt_and_validation() -> None:
     bad_calls = (
         lambda: sentiment_score_component("bad"),
         lambda: sentiment_score_component([{"role": "", "content": "hello"}]),
-        lambda: sentiment_score_component([{"role": "user", "content": ""}]),
         lambda: sentiment_score_component(["hello"]),
         lambda: sentiment_score_component([{"role": "user", "content": "hello"}], llm_client=lambda _: "not json"),
     )
@@ -254,7 +253,6 @@ def assert_loop_penalty_validates_inputs() -> None:
         lambda: loop_penalty_component("bad"),
         lambda: loop_penalty_component(["hello"]),
         lambda: loop_penalty_component([{"role": "", "content": "Why?"}]),
-        lambda: loop_penalty_component([{"role": "user", "content": ""}]),
     )
     for bad_call in bad_calls:
         try:
@@ -263,6 +261,22 @@ def assert_loop_penalty_validates_inputs() -> None:
             pass
         else:
             raise AssertionError("bad loop_penalty_component input was accepted")
+
+
+def assert_loop_penalty_ignores_blank_transcript_messages() -> None:
+    penalty = loop_penalty_component(
+        [
+            {"role": "user", "content": "   "},
+            {"role": "assistant", "content": "\n\t"},
+            {"role": "user", "content": "Why is my internet still down?"},
+        ]
+    )
+    if penalty.repeated_question_count != 0 or penalty.value != 0.0:
+        raise AssertionError(f"blank transcript messages should be ignored: {penalty.to_dict()}")
+
+    sentiment = sentiment_score_component([{"role": "user", "content": "   "}])
+    if sentiment.label != "neutral":
+        raise AssertionError(f"all-blank transcript should produce neutral sentiment: {sentiment.to_dict()}")
 
 
 def assert_knowledge_coverage_combines_tool_calls_and_crag_confidence() -> None:
@@ -309,6 +323,18 @@ def assert_knowledge_coverage_handles_open_tool_lists() -> None:
     empty = knowledge_coverage_component([], [])
     if empty.value != 0.0 or empty.tool_coverage != 0.0 or empty.crag_confidence != 0.0:
         raise AssertionError(f"empty evidence should have zero coverage: {empty.to_dict()}")
+
+
+def assert_knowledge_coverage_treats_timeout_as_failed_tool() -> None:
+    coverage = knowledge_coverage_component(
+        [{"tool_name": "retrieve_policy", "status": "timeout"}],
+        [],
+        required_tools=["retrieve_policy"],
+    )
+    if coverage.tools_called != [{"name": "retrieve_policy", "successful": False}]:
+        raise AssertionError(f"timeout should be a failed tool call: {coverage.to_dict()}")
+    if coverage.tool_coverage != 0.0:
+        raise AssertionError(f"timeout should not cover required tool: {coverage.to_dict()}")
 
 
 def assert_knowledge_coverage_validates_inputs() -> None:
@@ -679,8 +705,10 @@ def main() -> None:
     assert_loop_penalty_detects_three_repeated_questions()
     assert_loop_penalty_ignores_non_questions_and_assistant_repetition()
     assert_loop_penalty_validates_inputs()
+    assert_loop_penalty_ignores_blank_transcript_messages()
     assert_knowledge_coverage_combines_tool_calls_and_crag_confidence()
     assert_knowledge_coverage_handles_open_tool_lists()
+    assert_knowledge_coverage_treats_timeout_as_failed_tool()
     assert_knowledge_coverage_validates_inputs()
     assert_compute_health_score_applies_weighted_formula()
     assert_compute_health_score_accepts_component_objects()

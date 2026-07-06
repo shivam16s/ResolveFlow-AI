@@ -1,12 +1,12 @@
 "use client";
 
-import { useState } from "react";
+import { useRef, useState } from "react";
 import Link from "next/link";
 import useSWR from "swr";
 import { AlertTriangle, Play, RotateCcw, SlidersHorizontal, Sparkles, X } from "lucide-react";
 import { GlassPanel, PageHeader, SectionLabel, StatusPill } from "@/components/BlueprintPrimitives";
 import { api } from "@/lib/api";
-import type { EvaluationReport } from "@/lib/types";
+import type { EvaluationReport, OutageTriggerResponse } from "@/lib/types";
 
 const presets = [
   ["Impatient user", "Repeated urgency, low patience, expects no re-asking.", "case_11"],
@@ -23,8 +23,38 @@ const harnessSteps = [
 ];
 
 export default function AdminHarnessPage() {
-  const { data } = useSWR<EvaluationReport>("admin-eval", api.evaluation.results);
+  const { data } = useSWR<EvaluationReport>("eval-results", api.evaluation.results);
   const [insights, setInsights] = useState<string | null>(null);
+  const [isLoadingInsights, setIsLoadingInsights] = useState(false);
+  const [chaosResult, setChaosResult] = useState<OutageTriggerResponse | null>(null);
+  const [isSimulatingOutage, setIsSimulatingOutage] = useState(false);
+  const insightsInFlightRef = useRef(false);
+
+  async function fetchInsights() {
+    if (insightsInFlightRef.current) return;
+    insightsInFlightRef.current = true;
+    setIsLoadingInsights(true);
+    setInsights("Generating AI Insights...");
+    try {
+      const res = await api.overview.insights();
+      setInsights(res.insights);
+    } catch {
+      setInsights("Failed to fetch insights.");
+    } finally {
+      insightsInFlightRef.current = false;
+      setIsLoadingInsights(false);
+    }
+  }
+
+  async function simulateOutage() {
+    if (isSimulatingOutage) return;
+    setIsSimulatingOutage(true);
+    try {
+      setChaosResult(await api.outages.trigger("Chennai Zone-04", 7, 100));
+    } finally {
+      setIsSimulatingOutage(false);
+    }
+  }
 
   return (
     <div className="p-6 max-w-7xl">
@@ -34,20 +64,13 @@ export default function AdminHarnessPage() {
         subtitle="A builder surface for adversarial customer presets, scenario reruns, failure inspection, and demo-safe replay behavior."
         action={
           <div className="flex items-center gap-3">
-            <button 
-              onClick={async () => {
-                setInsights("Generating AI Insights...");
-                try {
-                  const res = await api.overview.insights();
-                  setInsights(res.insights);
-                } catch {
-                  setInsights("Failed to fetch insights.");
-                }
-              }}
-              className="inline-flex items-center gap-2 rounded-lg px-4 py-2 text-sm font-semibold transition-all hover:scale-[1.02]" 
+            <button
+              onClick={fetchInsights}
+              disabled={isLoadingInsights}
+              className="inline-flex items-center gap-2 rounded-lg px-4 py-2 text-sm font-semibold transition-all hover:scale-[1.02] disabled:cursor-not-allowed disabled:opacity-60 disabled:hover:scale-100"
               style={{ background: "rgba(139, 92, 246, 0.15)", border: "1px solid rgba(139, 92, 246, 0.4)", color: "#a78bfa", boxShadow: "0 0 15px rgba(139, 92, 246, 0.2)" }}
             >
-              God-Mode Insights <Sparkles size={14} />
+              {isLoadingInsights ? "Generating..." : "God-Mode Insights"} <Sparkles size={14} />
             </button>
             <Link href="/test" className="inline-flex items-center gap-2 rounded-lg px-4 py-2 text-sm font-semibold" style={{ background: "rgba(20,184,166,0.12)", border: "1px solid rgba(20,184,166,0.34)", color: "#5eead4" }}>
               Open isolated test <Play size={14} />
@@ -102,6 +125,36 @@ export default function AdminHarnessPage() {
         </GlassPanel>
       </div>
 
+      <GlassPanel className="mt-6 p-5">
+        <div className="flex flex-wrap items-start justify-between gap-4">
+          <div>
+            <SectionLabel>Chaos Button</SectionLabel>
+            <h2 className="text-lg font-semibold" style={{ color: "var(--text-primary)" }}>Simulate verified outage</h2>
+            <p className="mt-2 max-w-2xl text-sm leading-relaxed" style={{ color: "var(--text-secondary)" }}>
+              Creates a verified Chennai Zone-04 outage, finds affected customers, sends proactive outreach,
+              and applies the service-credit policy gate.
+            </p>
+          </div>
+          <button
+            onClick={() => void simulateOutage()}
+            disabled={isSimulatingOutage}
+            className="inline-flex items-center gap-2 rounded-lg px-4 py-2 text-sm font-semibold disabled:opacity-50"
+            style={{ background: "rgba(244,63,94,0.12)", border: "1px solid rgba(244,63,94,0.32)", color: "#fb7185" }}
+          >
+            <AlertTriangle size={15} />
+            {isSimulatingOutage ? "Simulating..." : "Simulate outage"}
+          </button>
+        </div>
+
+        {chaosResult && (
+          <div className="mt-4 grid gap-3 md:grid-cols-3">
+            <ChaosMetric label="Outage" value={chaosResult.outage_id} sub={`${chaosResult.duration_hours} hrs · ${chaosResult.location}`} />
+            <ChaosMetric label="Affected" value={chaosResult.affected_customer_count} sub="customers matched by location" />
+            <ChaosMetric label="Contacts" value={chaosResult.proactive_contacts.length} sub="proactive messages created" />
+          </div>
+        )}
+      </GlassPanel>
+
       <div className="mt-6 grid gap-4 md:grid-cols-3">
         {harnessSteps.map(({ title, body, icon: Icon }) => (
           <GlassPanel key={title} className="p-4">
@@ -111,6 +164,16 @@ export default function AdminHarnessPage() {
           </GlassPanel>
         ))}
       </div>
+    </div>
+  );
+}
+
+function ChaosMetric({ label, value, sub }: { label: string; value: string | number; sub: string }) {
+  return (
+    <div className="rounded-lg p-4" style={{ background: "var(--surface-3)", border: "1px solid var(--border)" }}>
+      <p className="text-[11px] font-semibold uppercase tracking-widest" style={{ color: "var(--text-muted)" }}>{label}</p>
+      <p className="mt-3 break-words font-mono text-lg font-semibold" style={{ color: "#5eead4" }}>{value}</p>
+      <p className="mt-1 text-xs" style={{ color: "var(--text-secondary)" }}>{sub}</p>
     </div>
   );
 }

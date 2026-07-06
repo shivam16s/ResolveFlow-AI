@@ -118,7 +118,7 @@ def _score_retrieval(
     supported_terms = [term for term in answer_terms if term in context_text]
     missing_terms = [term for term in answer_terms if term not in context_text]
     context_recall = round(len(supported_terms) /
-                         len(answer_terms), 4) if answer_terms else 1.0
+                           len(answer_terms), 4) if answer_terms else 0.0
     relevant_ranks = _relevant_context_ranks(
         contexts, query=query, answer_terms=answer_terms)
     context_precision = _average_precision(relevant_ranks, len(contexts))
@@ -185,16 +185,27 @@ def _answer_terms(scenario: EvaluationScenario, policy_id: str) -> list[str]:
     never restates verbatim, so counting them would understate context_recall by
     construction rather than measure real grounding.
     """
-    terms = set(_tokens(policy_id.replace("_", " ")))
+    policy_terms = set(_tokens(policy_id.replace("_", " ")))
+    terms = set(policy_terms)
     for policy in scenario.goal_state.get("required_policies", []):
         if policy == policy_id:
             terms.update(_tokens(policy.replace("_", " ")))
     for criterion in scenario.goal_state.get("success_criteria", []):
-        terms.update(_tokens(str(criterion)))
+        criterion_terms = set(_tokens(str(criterion)))
+        if _criterion_mentions_policy(criterion_terms, policy_terms):
+            terms.update(criterion_terms)
     return sorted(
         term for term in terms
         if len(term) >= 4 and not _is_numeric(term)
     )
+
+
+def _criterion_mentions_policy(criterion_terms: set[str], policy_terms: set[str]) -> bool:
+    policy_specific_terms = {
+        term for term in policy_terms
+        if len(term) >= 4 and term not in {"policy", "rule", "rules"}
+    }
+    return bool(criterion_terms & policy_specific_terms)
 
 
 def _is_numeric(token: str) -> bool:
@@ -209,9 +220,20 @@ def _relevant_context_ranks(contexts: list[str], *, query: str, answer_terms: li
         context_terms = set(_tokens(context))
         query_overlap = len(context_terms & query_terms)
         answer_overlap = len(context_terms & answer_term_set)
-        if query_overlap > 0 or answer_overlap >= 2:
+        if _context_overlap_is_relevant(
+            query_overlap=query_overlap,
+            answer_overlap=answer_overlap,
+        ):
             ranks.append(index)
     return ranks
+
+
+def _context_overlap_is_relevant(*, query_overlap: int, answer_overlap: int) -> bool:
+    if answer_overlap >= 2:
+        return True
+    if answer_overlap >= 1 and query_overlap >= 2:
+        return True
+    return query_overlap >= 3
 
 
 def _average_precision(relevant_ranks: list[int], context_count: int) -> float:

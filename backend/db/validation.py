@@ -22,6 +22,7 @@ EXPECTED_TABLES = {
     "human_handoff_queue",
     "memory_store",
     "conversations",
+    "telemetry",
 }
 
 

@@ -1,0 +1,47 @@
+services:
+  backend:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    environment:
+      RESOLVEFLOW_DB_PATH: /app/data/resolveflow.db
+      RESOLVEFLOW_NOW: "2026-06-01"
+      RESOLVEFLOW_RECEIPT_SECRET: ${RESOLVEFLOW_RECEIPT_SECRET:-}
+      RESOLVEFLOW_AGENT_DESK_TOKEN: ${RESOLVEFLOW_AGENT_DESK_TOKEN:-}
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+      GEMINI_MODEL: ${GEMINI_MODEL:-gemini-2.5-flash}
+      GEMINI_PRIMARY_MODEL: ${GEMINI_PRIMARY_MODEL:-gemini-2.5-flash}
+      GEMINI_SECONDARY_MODEL: ${GEMINI_SECONDARY_MODEL:-gemini-2.5-flash-lite}
+    ports:
+      - "8000:8000"
+    volumes:
+      - resolveflow-data:/app/data
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8000/api/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+
+  frontend:
+    build:
+      context: ./frontend
+      args:
+        BACKEND_URL: http://backend:8000
+        NEXT_PUBLIC_AGENT_DESK_TOKEN: ${RESOLVEFLOW_AGENT_DESK_TOKEN:-}
+    environment:
+      BACKEND_URL: http://backend:8000
+    ports:
+      - "3000:3000"
+    depends_on:
+      backend:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:3000/ >/dev/null 2>&1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+
+volumes:
+  resolveflow-data:

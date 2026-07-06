@@ -9,7 +9,9 @@ data/eval_*.json
 data/chroma/
 data/chroma_test*/
 data/chroma_debug*/
+data/chroma_probe*/
 *.db
 *.db-*
 
 frontend/dev-server.*.log
+scratch/

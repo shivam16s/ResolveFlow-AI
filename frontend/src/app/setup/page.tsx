@@ -5,7 +5,7 @@ import { GlassPanel, PageHeader, SectionLabel, StatusPill } from "@/components/B
 
 const steps = [
   { name: "Domain", status: "done", detail: "Telecom customer care with billing, outage, plan, and cancellation intents.", icon: Settings2 },
-  { name: "Schema", status: "done", detail: "13-table SQLite operational model with audit, memory, handoff, and evaluation stores.", icon: Database },
+  { name: "Schema", status: "done", detail: "14-table SQLite operational model with audit, memory, handoff, policy, telemetry, and evaluation stores.", icon: Database },
   { name: "Policies", status: "done", detail: "8 policy documents ingested and chunked for policy-grounded retrieval.", icon: FileText },
   { name: "Tools", status: "done", detail: "Customer lookup, billing, outage, diagnostics, credit, tickets, plan change, handoff.", icon: PlugZap },
   { name: "Memory", status: "done", detail: "Chroma memory collection plus HippoRAG graph nodes, edges, synonymy, and PPR retrieval.", icon: GitBranch },
@@ -13,11 +13,11 @@ const steps = [
 ];
 
 const contracts = [
-  ["GET/POST /setup/schema", "Schema editor and validation contract"],
-  ["POST /setup/policies/upload", "Policy ingestion and parse report"],
-  ["GET /setup/policies/graph", "DAG preview and orphan-node checks"],
-  ["POST /setup/tools/test", "Tool registry health checks"],
-  ["POST /setup/memory/config", "Memory lane configuration"],
+  ["GET /api/chat/message/stream", "SSE chat pipeline: intent, memory, policy, tools, DAG, response"],
+  ["POST /api/rag/policy/retrieve", "Policy-grounded retrieval over the resolveflow_policies collection"],
+  ["POST /api/rag/memory/search", "Hybrid vector + BM25 + graph memory search"],
+  ["POST /api/security/attack", "Policy-DAG red-team attack verification"],
+  ["GET /api/evaluation/results", "Saved deterministic + RAGAS + business-adherence evaluation report"],
 ];
 
 export default function SetupPage() {
@@ -56,7 +56,7 @@ export default function SetupPage() {
         </GlassPanel>
 
         <GlassPanel className="p-5">
-          <SectionLabel>Frontend Contracts From frontend.txt</SectionLabel>
+          <SectionLabel>Live API Contracts</SectionLabel>
           <div className="space-y-2">
             {contracts.map(([endpoint, detail]) => (
               <div key={endpoint} className="rounded-lg p-3" style={{ background: "var(--surface-3)", border: "1px solid var(--border)" }}>

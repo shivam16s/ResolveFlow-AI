@@ -11,7 +11,7 @@ from uuid import uuid4
 
 from backend.db.init_db import DEFAULT_DB_PATH
 
-from .health import loop_penalty_component, sentiment_score_component
+from .health import loop_penalty_component, sentiment_score_component, tool_call_successful
 
 
 TRIGGER_ORDER = (
@@ -433,14 +433,14 @@ def _anger_trigger(*, sentiment: Any, messages: list[dict[str, object]] | None, 
     component = sentiment
     if component is None and messages:
         component = sentiment_score_component(messages)
-    label = _object_payload(component).get(
-        "label") if component is not None else None
+    payload = _object_payload(component)
+    label = _payload_text(payload, "label", "text") if component is not None else None
     score = _score_value(component, maximum=1)
     text = _normalized_text(user_message)
     anger_terms = ("angry", "furious", "terrible", "useless",
                    "ridiculous", "hate this", "stop the bot")
     text_is_angry = any(term in text for term in anger_terms)
-    if label == "angry" or (score is not None and score <= 0.1) or text_is_angry:
+    if label in {"angry", "furious", "hostile"} or (score is not None and score <= 0.1) or text_is_angry:
         return HandoffTrigger(
             code="anger",
             label="Customer anger",
@@ -785,16 +785,7 @@ def _optional_int(value: Any) -> int | None:
 
 
 def _tool_call_successful(tool_call: dict[str, Any]) -> bool:
-    if "ok" in tool_call:
-        return bool(tool_call["ok"])
-    status = str(tool_call.get("status", "")).strip().lower()
-    if status in {"ok", "success", "successful", "completed", "resolved"}:
-        return True
-    if status in {"fail", "failed", "error", "blocked", "timeout"}:
-        return False
-    if tool_call.get("error") or tool_call.get("exception"):
-        return False
-    return True
+    return tool_call_successful(tool_call)
 
 
 def _normalized_text(value: str | None) -> str:

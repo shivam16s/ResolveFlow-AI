@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 import sys
+import threading
+import time
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -283,6 +285,76 @@ Escalate unverified outage requests or requests above INR 500.
         raise AssertionError(f"irrelevant strip leaked into refined evidence: {result.to_dict()}")
     if len(llm.prompts) != result.strips_considered:
         raise AssertionError("each strip should be re-scored")
+
+
+def assert_crag_strip_scoring_is_parallel_and_fault_tolerant() -> None:
+    document = """
+## Credit Rule A
+Verified outage service credit evidence includes invoice impact and affected location.
+
+## Credit Rule B
+Duplicate charge refund evidence includes a duplicate payment transaction and invoice ID.
+
+## Credit Rule C
+bad-json-strip should not abort the entire CRAG path when the judge response is malformed.
+
+## Credit Rule D
+Prior credit checks prevent a second automatic credit in the same billing period.
+
+## Credit Rule E
+Cancellation requests stay queued until billing and outage issues are acknowledged.
+
+## Credit Rule F
+Router diagnostics are required before technician dispatch for connectivity issues.
+"""
+
+    class SlowFaultyStripLLM:
+        def __init__(self) -> None:
+            self.prompts: list[str] = []
+            self.active = 0
+            self.max_active = 0
+            self.lock = threading.Lock()
+
+        def __call__(self, prompt: str) -> str:
+            with self.lock:
+                self.prompts.append(prompt)
+                self.active += 1
+                self.max_active = max(self.max_active, self.active)
+            try:
+                time.sleep(0.05)
+                if "bad-json-strip" in prompt:
+                    return "not json"
+                return json.dumps(
+                    {
+                        "relevance": "relevant",
+                        "score": 0.71,
+                        "rationale": "Strip is related to the customer service policy route.",
+                        "evidence_terms": ["service", "policy"],
+                    }
+                )
+            finally:
+                with self.lock:
+                    self.active -= 1
+
+    llm = SlowFaultyStripLLM()
+    result = crag_correct_path(
+        "outage service credit duplicate charge cancellation",
+        document,
+        source_id="resilience_policy",
+        llm_client=llm,
+        max_strip_tokens=30,
+    )
+
+    if result.strips_considered < 6:
+        raise AssertionError(f"expected multiple strips: {result.to_dict()}")
+    if len(llm.prompts) != result.strips_considered:
+        raise AssertionError("all strips should be attempted even when one fails")
+    if llm.max_active < 2:
+        raise AssertionError("strip relevance calls did not run concurrently")
+    if any("bad-json-strip" in item.strip.text for item in result.refined_strips):
+        raise AssertionError(f"malformed strip response should not be refined: {result.to_dict()}")
+    if len(result.refined_strips) != result.strips_considered - 1:
+        raise AssertionError(f"only the malformed strip should be dropped: {result.to_dict()}")
 
 
 def assert_crag_incorrect_path_rewrites_retries_and_rescores() -> None:
@@ -700,6 +772,7 @@ def main() -> None:
     assert_rule_based_relevance_scores_policy_chunks()
     assert_decomposes_policy_to_strips()
     assert_crag_correct_path_refines_and_rescores_strips()
+    assert_crag_strip_scoring_is_parallel_and_fault_tolerant()
     assert_crag_incorrect_path_rewrites_retries_and_rescores()
     assert_crag_ambiguous_path_combines_internal_and_external_strips()
     assert_scores_answer_support_and_usefulness()

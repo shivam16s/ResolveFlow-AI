@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+import sqlite3
 from datetime import date
 from pathlib import Path
 import sys
@@ -74,6 +76,94 @@ def assert_detects_unverified_open_outage_and_customer_impact() -> None:
         raise AssertionError(f"unlisted customer should not be affected: {status}")
 
 
+def assert_prefers_older_active_outage_over_newer_cleared_record() -> None:
+    db_path = build_seeded_outage_db()
+    with sqlite3.connect(db_path) as connection:
+        connection.executemany(
+            """
+            INSERT INTO outages(outage_id, location, start_time, end_time, duration_hours, verified, affected_customers)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            [
+                (
+                    "OUT-ACTIVE-OLD",
+                    "Mumbai Zone-99",
+                    "2026-05-20T08:00:00",
+                    None,
+                    None,
+                    1,
+                    json.dumps(["CUST-1001"]),
+                ),
+                (
+                    "OUT-CLEARED-NEW",
+                    "Mumbai Zone-99",
+                    "2026-05-22T08:00:00",
+                    "2026-05-22T09:00:00",
+                    1.0,
+                    1,
+                    json.dumps(["CUST-1001"]),
+                ),
+            ],
+        )
+
+    status = check_outage_status(
+        "Mumbai Zone-99",
+        customer_id="CUST-1001",
+        db_path=db_path,
+        reference_date=date(2026, 5, 23),
+    )
+    if status["outage_id"] != "OUT-ACTIVE-OLD":
+        raise AssertionError(f"active outage should outrank newer cleared outage: {status}")
+    if status["outage_cleared"] is not False:
+        raise AssertionError(f"active outage should not be marked cleared: {status}")
+
+
+def assert_surfaces_concurrent_open_outages() -> None:
+    db_path = build_seeded_outage_db()
+    with sqlite3.connect(db_path) as connection:
+        connection.executemany(
+            """
+            INSERT INTO outages(outage_id, location, start_time, end_time, duration_hours, verified, affected_customers)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            [
+                (
+                    "OUT-ACTIVE-ONE",
+                    "Pune Zone-42",
+                    "2026-05-20T08:00:00",
+                    None,
+                    None,
+                    1,
+                    json.dumps(["CUST-1001"]),
+                ),
+                (
+                    "OUT-ACTIVE-TWO",
+                    "Pune Zone-42",
+                    "2026-05-21T08:00:00",
+                    None,
+                    None,
+                    0,
+                    json.dumps(["CUST-1002"]),
+                ),
+            ],
+        )
+
+    status = check_outage_status(
+        "Pune Zone-42",
+        customer_id="CUST-1001",
+        db_path=db_path,
+        reference_date=date(2026, 5, 23),
+    )
+
+    if status["active_outage_count"] != 2:
+        raise AssertionError(f"concurrent open outages should both be counted: {status}")
+    related_ids = {item["outage_id"] for item in status["related_outages"]}
+    if related_ids != {"OUT-ACTIVE-ONE", "OUT-ACTIVE-TWO"}:
+        raise AssertionError(f"all concurrent outages should be surfaced: {status}")
+    if status["outage_id"] != "OUT-ACTIVE-TWO":
+        raise AssertionError(f"primary outage should remain the newest active record: {status}")
+
+
 def assert_handles_missing_location_and_bad_inputs() -> None:
     db_path = build_seeded_outage_db()
     missing = check_outage_status(
@@ -121,6 +211,8 @@ def assert_outage_status_api_endpoint() -> None:
 def main() -> None:
     assert_detects_verified_customer_outage()
     assert_detects_unverified_open_outage_and_customer_impact()
+    assert_prefers_older_active_outage_over_newer_cleared_record()
+    assert_surfaces_concurrent_open_outages()
     assert_handles_missing_location_and_bad_inputs()
     assert_outage_status_api_endpoint()
     print("outage status tests passed")

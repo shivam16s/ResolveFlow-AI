@@ -111,7 +111,7 @@ def seed_outages(db_path: Path = DEFAULT_DB_PATH) -> None:
     seed_customers(db_path)
     with sqlite3.connect(db_path) as connection:
         connection.execute("PRAGMA foreign_keys = ON")
-        connection.execute("PRAGMA journal_mode = MEMORY")
+        connection.execute("PRAGMA journal_mode = WAL")
         connection.executemany(
             """
             INSERT INTO outages (

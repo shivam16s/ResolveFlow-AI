@@ -24,6 +24,14 @@ export interface OverviewCharts {
   health_distribution: HealthBucket[];
 }
 
+export interface TelemetrySummary {
+  turns: number;
+  p50_latency_ms: number;
+  p95_latency_ms: number;
+  avg_tokens_per_resolution: number;
+  estimated_cost_inr: number;
+}
+
 // ── Case list ─────────────────────────────────────────────────────────────────
 
 export type CaseStatus = "resolved" | "escalated" | "in_progress" | "open";
@@ -95,6 +103,8 @@ export interface HealthScorePoint {
   turn: number;
   score: number;
   label: string;
+  sentiment_score?: number;
+  sentiment_label?: string;
 }
 
 export type GuidedState = "IDLE" | "WAITING" | "VERIFYING" | "RESOLVED" | "FAILED" | "ESCALATED";
@@ -189,6 +199,16 @@ export interface BusinessAdherenceReport {
   summary: string;
 }
 
+export interface TemperatureResult {
+  temperature: number | null;
+  label: string;
+  runs: number;
+  pass_rate: number;
+  avg_score: number;
+  pass_indices: number[];
+  source: "deterministic" | "live_llm";
+}
+
 export interface EvaluationReport {
   run_id: string;
   run_at: string;
@@ -199,7 +219,16 @@ export interface EvaluationReport {
   avg_ragas_context_recall: number;
   avg_ragas_context_precision?: number;
   business_adherence?: BusinessAdherenceReport | null;
+  temperature_results?: TemperatureResult[];
   scenarios: ScenarioResult[];
+}
+
+export interface EvaluationRunResponse {
+  job_id: string;
+  run_id?: string;
+  status: string;
+  result_path?: string;
+  summary?: EvaluationReport;
 }
 
 // ── RAG Knowledge Explorer ────────────────────────────────────────────────────
@@ -320,4 +349,148 @@ export interface AuditLogRequest {
   policy_status?: string | null;
   health_score?: number | null;
   handoff_required?: boolean;
+}
+
+export interface AgentDeskQueueItem {
+  handoff_id: string;
+  case_id: string;
+  customer_id: string;
+  customer_name: string;
+  plan_id?: string | null;
+  risk_level?: string | null;
+  churn_score: number;
+  session_id?: string | null;
+  handoff_reason: string;
+  status: "waiting" | "assigned" | "resolved";
+  created_at: string;
+  assigned_to?: string | null;
+  intents: string[];
+  message_count: number;
+  last_customer_message?: string | null;
+  health_score?: number | null;
+  policy_status?: string | null;
+  ujcs?: number | null;
+  context_card: Record<string, unknown>;
+  recommended_opening_line: string;
+}
+
+export interface AgentDeskQueueResponse {
+  queue: AgentDeskQueueItem[];
+  total: number;
+}
+
+export interface AgentDeskProactiveContact {
+  session_id: string;
+  customer_id: string;
+  customer_name: string;
+  location: string;
+  risk_level: string;
+  created_at: string;
+  message: string;
+  status: "credited" | "blocked";
+  credit?: Record<string, unknown> | null;
+}
+
+export interface AgentDeskProactiveResponse {
+  contacts: AgentDeskProactiveContact[];
+  total: number;
+}
+
+export interface AgentDeskHandoffDetail extends AgentDeskQueueItem {
+  transcript: Array<Record<string, unknown>>;
+  tools_called: Array<Record<string, unknown>>;
+  health_scores: Array<Record<string, unknown>>;
+  policy_dag_path: Array<Record<string, unknown>>;
+  copilot_suggestions: Array<{
+    id: string;
+    title: string;
+    reply: string;
+    confidence: number;
+    evidence: Array<{
+      source: string;
+      label: string;
+      detail: string;
+    }>;
+  }>;
+  opening_line?: {
+    opening_line?: string;
+    rationale?: string;
+    [key: string]: unknown;
+  } | null;
+}
+
+export interface AgentDeskReplyResponse {
+  ok: boolean;
+  handoff_id: string;
+  case_id: string;
+  customer_id: string;
+  session_id: string;
+  already_replied?: boolean;
+  reply: {
+    role: "human_agent";
+    agent_name: string;
+    content: string;
+    timestamp: string;
+  };
+}
+
+export interface AgentDeskResolveResponse {
+  ok: boolean;
+  handoff_id: string;
+  case_id: string;
+  customer_id: string;
+  session_id: string;
+  status: "resolved";
+  already_resolved?: boolean;
+  audit_action: {
+    action: "human_handoff_resolved";
+    handoff_id: string;
+    agent_name: string;
+    resolution_note: string;
+    timestamp: string;
+  } | null;
+}
+
+export interface SecurityAttackResult {
+  audit_case_id: string;
+  attack_id: string;
+  prompt: string;
+  status: "blocked";
+  blocked_action: string;
+  policy_name: string;
+  stopped_node: string;
+  reached_action: string;
+  dag_path: string[];
+  ujcs: number;
+  receipt_trail: Array<{
+    stage: string;
+    status: string;
+    detail: string;
+  }>;
+  blocked_reason: string;
+  matched_by?: "explicit_attack_id" | "keyword_heuristic";
+  disclosure?: string | null;
+}
+
+export interface OutageTriggerResponse {
+  ok: boolean;
+  outage_id: string;
+  location: string;
+  verified: boolean;
+  duration_hours: number;
+  affected_customer_count: number;
+  affected_customers: Array<{
+    customer_id: string;
+    name: string;
+    location: string;
+    risk_level: string;
+  }>;
+  proactive_contacts: Array<{
+    customer_id: string;
+    name?: string | null;
+    session_id: string;
+    status: "credited" | "blocked";
+    message: string;
+    credit: Record<string, unknown>;
+  }>;
 }

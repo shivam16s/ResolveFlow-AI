@@ -94,6 +94,9 @@ class ChromaPolicyStore:
                 overlap_tokens=overlap_tokens,
             )
         ]
+        for policy_id in {document.policy_id for document in documents}:
+            self._delete_policy_chunks(policy_id)
+
         ids = [chunk.chunk_id for chunk in chunks]
         self.collection.upsert(
             ids=ids,
@@ -139,6 +142,15 @@ class ChromaPolicyStore:
             kwargs["where"] = where
 
         return self.collection.query(**kwargs)
+
+    def _delete_policy_chunks(self, policy_id: str) -> None:
+        existing = self.collection.get(
+            where={"policy_id": policy_id},
+            include=[],
+        )
+        ids = list(existing.get("ids") or [])
+        if ids:
+            self.collection.delete(ids=ids)
 
 
 def load_policy_documents(policy_dir: Path = DEFAULT_POLICY_DIR) -> list[PolicyDocument]:

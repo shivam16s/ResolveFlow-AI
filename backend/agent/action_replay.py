@@ -291,7 +291,13 @@ def _fallback_semantic_decision(candidate: ActionCandidate, actions: list[TakenA
 
 
 def _match_by_index(actions: list[TakenAction], index: Any) -> TakenAction | None:
-    if not isinstance(index, int):
+    if isinstance(index, bool):
+        return None
+    if isinstance(index, float):
+        if not index.is_integer():
+            return None
+        index = int(index)
+    elif not isinstance(index, int):
         return None
     if index < 0 or index >= len(actions):
         return None

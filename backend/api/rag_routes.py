@@ -32,7 +32,7 @@ class PolicyRetrieveRequest(BaseModel):
 @rag_router.post("/memory/search")
 def memory_search(payload: MemorySearchRequest, request: Request) -> JSONResponse:
     try:
-        manager = MemoryManager(db_path=request.app.state.db_path)
+        manager = _memory_manager_for_request(request)
         results = manager.retrieve(
             query=payload.query,
             customer_id=payload.customer_id,
@@ -62,6 +62,21 @@ def memory_search(payload: MemorySearchRequest, request: Request) -> JSONRespons
     })
 
 
+def _memory_manager_for_request(request: Request) -> MemoryManager:
+    db_path = request.app.state.db_path
+    manager = getattr(request.app.state, "memory_manager", None)
+    manager_db_path = getattr(request.app.state, "memory_manager_db_path", None)
+    if isinstance(manager, MemoryManager) and manager_db_path == str(db_path):
+        return manager
+    if manager is not None and hasattr(manager, "close"):
+        manager.close()
+
+    manager = MemoryManager(db_path=db_path)
+    request.app.state.memory_manager = manager
+    request.app.state.memory_manager_db_path = str(db_path)
+    return manager
+
+
 def _memory_store_fallback(
     *, db_path: Any, customer_id: str, query: str, top_k: int, memory_type: str | None
 ) -> list[dict[str, Any]]:
@@ -89,7 +104,10 @@ def _memory_store_fallback(
         scored.append((overlap, row))
     # Keyword matches first; fall back to most-recent memories when nothing matches
     # so the panel still shows the customer's known history.
-    scored.sort(key=lambda item: (-item[0], -(item[1]["updated_at"] or "")))
+    # Two stable sorts: recency (newest first), then overlap — ISO timestamps
+    # sort lexicographically, and unary minus doesn't apply to strings.
+    scored.sort(key=lambda item: item[1]["updated_at"] or "", reverse=True)
+    scored.sort(key=lambda item: item[0], reverse=True)
 
     results = []
     for rank, (overlap, row) in enumerate(scored[:top_k], start=1):

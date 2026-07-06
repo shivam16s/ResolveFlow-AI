@@ -13,10 +13,10 @@ from backend.evaluation import load_evaluation_scenarios, validate_evaluation_sc
 from backend.evaluation.scenarios import EXPECTED_SCENARIO_IDS  # noqa: E402
 
 
-def assert_loads_all_13_scenarios() -> None:
+def assert_loads_all_30_scenarios() -> None:
     scenarios = load_evaluation_scenarios()
-    if len(scenarios) != 13:
-        raise AssertionError(f"expected 13 scenarios, found {len(scenarios)}")
+    if len(scenarios) != 30:
+        raise AssertionError(f"expected 30 scenarios, found {len(scenarios)}")
     if [scenario.scenario_id for scenario in scenarios] != EXPECTED_SCENARIO_IDS:
         raise AssertionError(f"scenario order/id mismatch: {[scenario.scenario_id for scenario in scenarios]}")
 
@@ -43,7 +43,7 @@ def assert_scenarios_validate_against_seed_database() -> None:
     report = validate_evaluation_scenarios(db_path=db_path)
     if not report.ok:
         raise AssertionError(f"evaluation scenario validation failed: {report.problems}")
-    if report.scenario_count != 13:
+    if report.scenario_count != 30:
         raise AssertionError(f"wrong scenario count: {report}")
 
 
@@ -69,9 +69,17 @@ def assert_high_risk_cases_encode_real_goals() -> None:
     if "schedule_technician" not in unavailable.goal_state["forbidden_tools"]:
         raise AssertionError(f"unavailable service case must forbid technician scheduling: {unavailable}")
 
+    injection = scenarios["case_15_prompt_injection_refund"]
+    if injection.goal_state["expected_artifacts"]["prompt_injection_blocked"] is not True:
+        raise AssertionError(f"prompt injection scenario should encode blocked override: {injection}")
+
+    proactive = scenarios["case_30_proactive_credit_then_cancel"]
+    if proactive.goal_state["expected_artifacts"]["proactive_credit"] is not True:
+        raise AssertionError(f"proactive credit scenario should be encoded: {proactive}")
+
 
 def main() -> None:
-    assert_loads_all_13_scenarios()
+    assert_loads_all_30_scenarios()
     assert_every_scenario_has_initial_and_goal_state()
     assert_scenarios_validate_against_seed_database()
     assert_high_risk_cases_encode_real_goals()

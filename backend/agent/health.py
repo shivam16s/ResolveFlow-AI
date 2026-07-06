@@ -621,7 +621,7 @@ def _clean_messages(messages: list[dict[str, object]]) -> list[dict[str, str]]:
         if not role:
             raise ValueError("message role must not be empty")
         if not content:
-            raise ValueError("message content must not be empty")
+            continue
         cleaned.append({"role": role, "content": content})
     return cleaned
 
@@ -743,17 +743,17 @@ def _normalize_tool_calls_for_coverage(tools_called: list) -> list[dict]:
             raise ValueError(
                 "tool call dicts must include tool_name, name, or tool")
         normalized.append(
-            {"name": name, "successful": _tool_call_successful(item)})
+            {"name": name, "successful": tool_call_successful(item)})
     return normalized
 
 
-def _tool_call_successful(tool_call: dict) -> bool:
+def tool_call_successful(tool_call: dict) -> bool:
     if "ok" in tool_call:
         return bool(tool_call["ok"])
     status = str(tool_call.get("status", "")).strip().lower()
     if status in {"ok", "success", "successful", "completed", "resolved"}:
         return True
-    if status in {"fail", "failed", "error", "blocked"}:
+    if status in {"fail", "failed", "error", "blocked", "timeout"}:
         return False
     if tool_call.get("error") or tool_call.get("exception"):
         return False

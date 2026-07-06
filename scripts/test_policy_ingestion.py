@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 import sys
 from uuid import uuid4
+import tempfile
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -113,6 +114,62 @@ def test_ingests_8_policy_docs_into_chromadb_collection() -> None:
     assert "duplicate_charge_policy" in result_policy_ids
 
 
+def test_reingesting_edited_policy_replaces_superseded_chunks() -> None:
+    persist_path = ROOT / "data" / f"chroma_test_policy_replace_{uuid4().hex}"
+    policy_dir = Path(tempfile.mkdtemp(prefix="resolveflow-policy-edit-"))
+    policy_path = policy_dir / "refund_policy.md"
+    policy_path.write_text(
+        "\n".join(
+            [
+                "# Refund Policy",
+                "Policy ID: refund_policy",
+                "Version: 1",
+                "Effective date: 2026-01-01",
+                "Owner: Billing Ops",
+                "",
+                "Refunds require legacy voucher approval before release.",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    store = ChromaPolicyStore(
+        persist_path=persist_path,
+        collection_name="resolveflow_policies_replace_test",
+    )
+    first = store.ingest_policy_docs(policy_dir, expected_count=1)
+    first_stored = store.collection.get(ids=first.ids, include=["documents", "metadatas"])
+    assert "legacy voucher approval" in first_stored["documents"][0]
+    assert first_stored["metadatas"][0]["version"] == 1
+
+    policy_path.write_text(
+        "\n".join(
+            [
+                "# Refund Policy",
+                "Policy ID: refund_policy",
+                "Version: 2",
+                "Effective date: 2026-02-01",
+                "Owner: Billing Ops",
+                "",
+                "Refunds require payment ownership verification before release.",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    second = store.ingest_policy_docs(policy_dir, expected_count=1)
+    assert second.ids != first.ids
+    assert store.collection.count() == 1
+
+    old_lookup = store.collection.get(ids=first.ids, include=["documents", "metadatas"])
+    if old_lookup["ids"]:
+        raise AssertionError(f"superseded policy chunks remained after re-ingest: {old_lookup}")
+
+    latest = store.collection.get(ids=second.ids, include=["documents", "metadatas"])
+    assert latest["metadatas"][0]["version"] == 2
+    assert "payment ownership verification" in latest["documents"][0]
+
+
 def test_rejects_wrong_expected_policy_count_and_bad_query() -> None:
     persist_path = ROOT / "data" / f"chroma_test_policies_bad_{uuid4().hex}"
     store = ChromaPolicyStore(
@@ -139,6 +196,7 @@ def main() -> None:
     test_loads_all_policy_documents_with_metadata()
     test_chunks_policy_documents_to_token_windows_with_overlap()
     test_ingests_8_policy_docs_into_chromadb_collection()
+    test_reingesting_edited_policy_replaces_superseded_chunks()
     test_rejects_wrong_expected_policy_count_and_bad_query()
     print("policy ingestion tests passed")
 

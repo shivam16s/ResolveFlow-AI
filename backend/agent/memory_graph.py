@@ -4,6 +4,7 @@ import json
 import math
 import re
 import sqlite3
+from threading import Lock
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from typing import Callable, Iterable, Mapping, Sequence
@@ -12,6 +13,8 @@ from .openie import OpenIETriple
 
 
 NODE_TYPES = ("entity", "event", "policy", "preference", "value")
+_DEFAULT_EMBEDDING_FUNCTION = None
+_DEFAULT_EMBEDDING_FUNCTION_LOCK = Lock()
 
 CREATE_MEMORY_GRAPH_SQL = """
 CREATE TABLE IF NOT EXISTS memory_graph (
@@ -165,6 +168,7 @@ def add_synonymy_edges(
     threshold: float = 0.8,
     embedding_function: Callable[[list[str]],
                                  Sequence[Sequence[float]]] | None = None,
+    candidate_node_ids: Iterable[str] | None = None,
 ) -> SynonymyGraphUpdate:
     customer_id = customer_id.strip()
     if not customer_id:
@@ -191,47 +195,50 @@ def add_synonymy_edges(
 
     now = datetime.now(timezone.utc).isoformat()
     touched_edges: set[tuple[str, str]] = set()
+    candidate_pairs = _synonymy_candidate_pairs(
+        nodes,
+        candidate_node_ids=candidate_node_ids,
+    )
 
     with connection:
-        for left_index in range(len(nodes)):
-            for right_index in range(left_index + 1, len(nodes)):
-                similarity = cosine_similarity(
-                    embeddings[left_index], embeddings[right_index])
-                if similarity < threshold:
-                    continue
+        for left_index, right_index in candidate_pairs:
+            similarity = cosine_similarity(
+                embeddings[left_index], embeddings[right_index])
+            if similarity < threshold:
+                continue
 
-                left = nodes[left_index]
-                right = nodes[right_index]
-                passages = _dedupe(left["passages"] + right["passages"])
-                evidence = [
-                    f"cosine_similarity={similarity:.4f}",
-                    f"{left['label']} ~ {right['label']}",
-                ]
-                weight = round(similarity, 4)
-                _upsert_edge_values(
-                    connection,
-                    customer_id=customer_id,
-                    source_node_id=left["node_id"],
-                    target_node_id=right["node_id"],
-                    relation="synonymy",
-                    passages=passages,
-                    evidence_items=evidence,
-                    weight=weight,
-                    updated_at=now,
-                )
-                _upsert_edge_values(
-                    connection,
-                    customer_id=customer_id,
-                    source_node_id=right["node_id"],
-                    target_node_id=left["node_id"],
-                    relation="synonymy",
-                    passages=passages,
-                    evidence_items=evidence,
-                    weight=weight,
-                    updated_at=now,
-                )
-                touched_edges.add((left["node_id"], right["node_id"]))
-                touched_edges.add((right["node_id"], left["node_id"]))
+            left = nodes[left_index]
+            right = nodes[right_index]
+            passages = _dedupe(left["passages"] + right["passages"])
+            evidence = [
+                f"cosine_similarity={similarity:.4f}",
+                f"{left['label']} ~ {right['label']}",
+            ]
+            weight = round(similarity, 4)
+            _upsert_edge_values(
+                connection,
+                customer_id=customer_id,
+                source_node_id=left["node_id"],
+                target_node_id=right["node_id"],
+                relation="synonymy",
+                passages=passages,
+                evidence_items=evidence,
+                weight=weight,
+                updated_at=now,
+            )
+            _upsert_edge_values(
+                connection,
+                customer_id=customer_id,
+                source_node_id=right["node_id"],
+                target_node_id=left["node_id"],
+                relation="synonymy",
+                passages=passages,
+                evidence_items=evidence,
+                weight=weight,
+                updated_at=now,
+            )
+            touched_edges.add((left["node_id"], right["node_id"]))
+            touched_edges.add((right["node_id"], left["node_id"]))
 
     return SynonymyGraphUpdate(
         customer_id=customer_id,
@@ -686,6 +693,45 @@ def _transition_rows(nodes: list[dict], node_index: dict[str, int]) -> list[list
     return rows
 
 
+def _synonymy_candidate_pairs(
+    nodes: list[dict],
+    *,
+    candidate_node_ids: Iterable[str] | None,
+) -> list[tuple[int, int]]:
+    if candidate_node_ids is None:
+        return [
+            (left_index, right_index)
+            for left_index in range(len(nodes))
+            for right_index in range(left_index + 1, len(nodes))
+        ]
+
+    candidate_ids = {
+        node_id_for_label(str(node_id))
+        for node_id in candidate_node_ids
+        if str(node_id).strip()
+    }
+    if not candidate_ids:
+        return []
+
+    candidate_indexes = [
+        index
+        for index, node in enumerate(nodes)
+        if node["node_id"] in candidate_ids
+    ]
+    seen: set[tuple[int, int]] = set()
+    pairs: list[tuple[int, int]] = []
+    for candidate_index in candidate_indexes:
+        for other_index in range(len(nodes)):
+            if candidate_index == other_index:
+                continue
+            pair = tuple(sorted((candidate_index, other_index)))
+            if pair in seen:
+                continue
+            seen.add(pair)
+            pairs.append(pair)
+    return pairs
+
+
 def _score_passages(nodes: list[dict], node_scores: list[float]) -> dict[str, float]:
     passage_scores: dict[str, float] = {}
     for index, node in enumerate(nodes):
@@ -705,9 +751,18 @@ def _normalize_vector(values: list[float]) -> list[float]:
 
 
 def _default_embedding_function() -> Callable[[list[str]], Sequence[Sequence[float]]]:
-    from chromadb.utils.embedding_functions import DefaultEmbeddingFunction
+    global _DEFAULT_EMBEDDING_FUNCTION
+    if _DEFAULT_EMBEDDING_FUNCTION is not None:
+        return _DEFAULT_EMBEDDING_FUNCTION
 
-    return DefaultEmbeddingFunction()
+    with _DEFAULT_EMBEDDING_FUNCTION_LOCK:
+        if _DEFAULT_EMBEDDING_FUNCTION is not None:
+            return _DEFAULT_EMBEDDING_FUNCTION
+
+        from chromadb.utils.embedding_functions import DefaultEmbeddingFunction
+
+        _DEFAULT_EMBEDDING_FUNCTION = DefaultEmbeddingFunction()
+        return _DEFAULT_EMBEDDING_FUNCTION
 
 
 def _loads_json_list(value: object) -> list:
