@@ -15,3 +15,5 @@ data/chroma_probe*/
 
 frontend/dev-server.*.log
 scratch/
+*.pptx
+*.zip

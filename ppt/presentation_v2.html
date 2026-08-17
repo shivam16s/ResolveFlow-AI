@@ -1,0 +1,120 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ResolveFlow AI - V2 Pitch Deck</title>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Outfit:wght@400;600;800&display=swap" rel="stylesheet">
+    <style>
+        :root {
+            --bg-dark: #050505;
+            --text-main: #f8fafc;
+            --text-muted: #94a3b8;
+            --accent-primary: #3b82f6;
+            --accent-teal: #2dd4bf;
+            --accent-purple: #8b5cf6;
+            --accent-glow: rgba(59, 130, 246, 0.4);
+            --glass-bg: rgba(255, 255, 255, 0.03);
+            --glass-border: rgba(255, 255, 255, 0.08);
+        }
+        
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        
+        body {
+            font-family: 'Inter', sans-serif;
+            background-color: var(--bg-dark);
+            color: var(--text-main);
+            overflow-x: hidden;
+            line-height: 1.6;
+        }
+
+        .presentation-container {
+            width: 100vw;
+            height: 100vh;
+            overflow-y: scroll;
+            scroll-snap-type: y mandatory;
+        }
+
+        .slide {
+            width: 100vw;
+            height: 100vh;
+            scroll-snap-align: start;
+            position: relative;
+            overflow: hidden;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+
+        /* Abstract SVG Backgrounds */
+        .bg-svg {
+            position: absolute;
+            top: 0; left: 0; width: 100%; height: 100%;
+            z-index: 1;
+            opacity: 0.6;
+            pointer-events: none;
+        }
+
+        /* Typography */
+        h1, h2, h3 { font-family: 'Outfit', sans-serif; }
+        
+        .text-gradient {
+            background: linear-gradient(135deg, #ffffff 0%, #a1a1aa 100%);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+        }
+        .text-gradient-accent {
+            background: linear-gradient(135deg, var(--accent-teal) 0%, var(--accent-primary) 100%);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+        }
+
+        /* Glassmorphism Cards */
+        .glass-panel {
+            background: var(--glass-bg);
+            backdrop-filter: blur(20px);
+            -webkit-backdrop-filter: blur(20px);
+            border: 1px solid var(--glass-border);
+            border-radius: 24px;
+            padding: 40px;
+            z-index: 10;
+            box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.5);
+        }
+
+        /* Animations */
+        @keyframes fadeUp {
+            from { opacity: 0; transform: translateY(30px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+        .animate-fade-up {
+            animation: fadeUp 1s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+        }
+        
+    </style>
+</head>
+<body>
+    <div class="presentation-container">
+
+    <section class="slide" id="slide-1">
+        
+        <!-- SVG Background -->
+        <svg class="bg-svg" viewBox="0 0 100 100" preserveAspectRatio="none">
+            <defs>
+                <radialGradient id="glow" cx="50%" cy="50%" r="50%">
+                    <stop offset="0%" stop-color="var(--accent-glow)" />
+                    <stop offset="100%" stop-color="transparent" />
+                </radialGradient>
+            </defs>
+            <circle cx="50" cy="50" r="40" fill="url(#glow)" />
+        </svg>
+
+        <div class="glass-panel animate-fade-up" style="text-align: center; max-width: 800px;">
+            <h1 class="text-gradient" style="font-size: 64px; margin-bottom: 20px;">ResolveFlow <span class="text-gradient-accent">AI</span></h1>
+            <p style="font-size: 24px; color: var(--text-muted);">Awaiting instructions for V2 Slide 1...</p>
+        </div>
+    
+    </section>
+    
+    </div>
+</body>
+</html>

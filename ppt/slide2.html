@@ -1,0 +1,267 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Slide 2 - Team & Problem Statement</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@300;400;500;600;700;800&family=Space+Grotesk:wght@500;700&display=swap" rel="stylesheet">
+    
+    <style>
+        :root {
+            --bg-base: #030407;
+            --accent-teal: #2dd4bf;
+            --accent-blue: #3b82f6;
+            --accent-purple: #8b5cf6;
+            --text-main: #ffffff;
+            --text-muted: #8ea0b8;
+            --glass-bg: rgba(255, 255, 255, 0.02);
+            --glass-border: rgba(255, 255, 255, 0.08);
+        }
+
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+
+        body {
+            background-color: #000000;
+            display: grid;
+            place-items: center;
+            min-height: 100vh;
+            font-family: 'Plus Jakarta Sans', sans-serif;
+            -webkit-font-smoothing: antialiased;
+            overflow: hidden;
+        }
+
+        /* 16:9 PRESENTATION CONTAINER */
+        .slide-container {
+            position: relative;
+            width: 1280px;
+            height: 720px;
+            background-color: var(--bg-base);
+            border-radius: 24px;
+            box-shadow: 
+                0 0 0 1px rgba(255, 255, 255, 0.05), 
+                0 45px 90px -20px rgba(0, 0, 0, 0.9),
+                inset 0 0 120px rgba(0, 0, 0, 0.8);
+            overflow: hidden;
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            align-items: center;
+            z-index: 1;
+        }
+
+        /* HIGH-TECH MASKED GRID */
+        .grid-overlay {
+            position: absolute;
+            inset: 0;
+            background-image: 
+                linear-gradient(rgba(255, 255, 255, 0.02) 1px, transparent 1px),
+                linear-gradient(90deg, rgba(255, 255, 255, 0.02) 1px, transparent 1px);
+            background-size: 44px 44px;
+            background-position: center center;
+            mask-image: radial-gradient(circle at center, black 15%, transparent 75%);
+            -webkit-mask-image: radial-gradient(circle at center, black 15%, transparent 75%);
+            z-index: 1;
+            pointer-events: none;
+        }
+
+        /* DYNAMIC LUXURY BACKGROUND ORBS - Changed for Slide 2 */
+        .ambient-light {
+            position: absolute;
+            border-radius: 50%;
+            pointer-events: none;
+            z-index: 0;
+            mix-blend-mode: screen;
+            filter: blur(140px);
+        }
+
+        /* Purple and Teal gradient shift for Slide 2 */
+        .light-left {
+            top: -20%; left: -5%;
+            width: 900px; height: 900px;
+            background: radial-gradient(circle, rgba(139, 92, 246, 0.15) 0%, transparent 65%);
+        }
+
+        .light-right {
+            bottom: -25%; right: -10%;
+            width: 1000px; height: 1000px;
+            background: radial-gradient(circle, rgba(45, 212, 191, 0.12) 0%, transparent 60%);
+        }
+
+        /* CONTENT LAYOUT FOR SLIDE 2 */
+        .content-wrapper {
+            position: relative;
+            z-index: 10;
+            width: 100%;
+            max-width: 1050px;
+            padding: 0 40px;
+            display: grid;
+            grid-template-columns: 1fr 1.5fr;
+            gap: 40px;
+            align-items: stretch;
+        }
+
+        /* PREMIUM GLASS CARDS */
+        .glass-card {
+            background: var(--glass-bg);
+            backdrop-filter: blur(20px);
+            -webkit-backdrop-filter: blur(20px);
+            border: 1px solid var(--glass-border);
+            border-radius: 20px;
+            padding: 40px;
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+        }
+
+        .card-header {
+            font-family: 'Space Grotesk', sans-serif;
+            font-size: 24px;
+            font-weight: 700;
+            margin-bottom: 24px;
+            letter-spacing: -0.5px;
+            color: var(--text-main);
+            display: flex;
+            align-items: center;
+            gap: 12px;
+        }
+
+        .card-header::before {
+            content: '';
+            display: block;
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            background: var(--accent-purple);
+            box-shadow: 0 0 10px var(--accent-purple);
+        }
+
+        .card-header.teal-dot::before {
+            background: var(--accent-teal);
+            box-shadow: 0 0 10px var(--accent-teal);
+        }
+
+        /* TEAM DETAILS STYLING */
+        .detail-row {
+            margin-bottom: 20px;
+        }
+        .detail-row:last-child {
+            margin-bottom: 0;
+        }
+        .detail-label {
+            font-size: 13px;
+            text-transform: uppercase;
+            letter-spacing: 2px;
+            color: var(--text-muted);
+            margin-bottom: 6px;
+            font-weight: 600;
+        }
+        .detail-value {
+            font-size: 20px;
+            font-weight: 500;
+            color: var(--text-main);
+        }
+
+        /* PROBLEM STATEMENT STYLING */
+        .problem-text {
+            font-size: 26px;
+            font-weight: 400;
+            line-height: 1.5;
+            color: rgba(255, 255, 255, 0.9);
+            letter-spacing: -0.2px;
+        }
+        .problem-highlight {
+            color: var(--accent-teal);
+            font-weight: 600;
+        }
+
+        /* LINE-ACCENTED FOOTER COORDINATES */
+        .metadata-footer {
+            position: absolute;
+            bottom: 45px; left: 65px; right: 65px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            z-index: 10;
+        }
+
+        .meta-item {
+            font-size: 13px;
+            font-weight: 700;
+            letter-spacing: 3px;
+            text-transform: uppercase;
+            color: #4f5e75;
+            display: flex;
+            align-items: center;
+            gap: 16px;
+        }
+        
+        .meta-left::before {
+            content: '';
+            display: block;
+            width: 32px; height: 1px;
+            background: linear-gradient(90deg, var(--accent-purple), transparent);
+        }
+
+        .meta-right::after {
+            content: '';
+            display: block;
+            width: 32px; height: 1px;
+            background: linear-gradient(270deg, var(--accent-teal), transparent);
+        }
+    </style>
+</head>
+<body>
+    <div class="slide-container">
+        <div class="grid-overlay"></div>
+        
+        <div class="ambient-light light-left"></div>
+        <div class="ambient-light light-right"></div>
+
+        <div class="content-wrapper">
+            
+            <!-- Left Column: Team Details -->
+            <div class="glass-card">
+                <div class="card-header">Team Details</div>
+                
+                <div class="detail-row">
+                    <div class="detail-label">Team Name</div>
+                    <div class="detail-value">Ragnarok</div>
+                </div>
+                
+                <div class="detail-row">
+                    <div class="detail-label">Institute</div>
+                    <div class="detail-value">IIT Madras</div>
+                </div>
+                
+                <div class="detail-row">
+                    <div class="detail-label">Team Leader</div>
+                    <div class="detail-value">[Leader Name]</div>
+                </div>
+                
+                <div class="detail-row">
+                    <div class="detail-label">Team Size</div>
+                    <div class="detail-value">4 Members</div>
+                </div>
+            </div>
+
+            <!-- Right Column: Problem Statement -->
+            <div class="glass-card" style="background: rgba(45, 212, 191, 0.02); border-color: rgba(45, 212, 191, 0.15);">
+                <div class="card-header teal-dot">The Problem</div>
+                <div class="problem-text">
+                    Most customer support bots are optimized for conversation, <span class="problem-highlight">not resolution.</span>
+                    <br><br>
+                    They fail at multi-issue intents, hallucinate policies, and <span class="problem-highlight">cannot be trusted</span> with high-risk transactions—leading to high escalation costs and churn.
+                </div>
+            </div>
+
+        </div>
+
+        <div class="metadata-footer">
+            <div class="meta-item meta-left">Ragnarok, IIT Madras</div>
+            <div class="meta-item meta-right">Customer care bot</div>
+        </div>
+    </div>
+</body>
+</html>

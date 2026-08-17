@@ -1,0 +1,215 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Slide 1 - ResolveFlow AI</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@300;400;500;600;700;800&family=Space+Grotesk:wght@500;700&display=swap" rel="stylesheet">
+    
+    <style>
+        :root {
+            --bg-base: #030407;
+            --accent-teal: #2dd4bf;
+            --accent-blue: #3b82f6;
+            --text-main: #ffffff;
+            --text-muted: #8ea0b8;
+        }
+
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+
+        body {
+            background-color: #000000;
+            display: grid;
+            place-items: center;
+            min-height: 100vh;
+            font-family: 'Plus Jakarta Sans', sans-serif;
+            -webkit-font-smoothing: antialiased;
+            overflow: hidden;
+        }
+
+        /* 16:9 PRESENTATION CONTAINER */
+        .slide-container {
+            position: relative;
+            width: 1280px;
+            height: 720px;
+            background-color: var(--bg-base);
+            border-radius: 24px;
+            box-shadow: 
+                0 0 0 1px rgba(255, 255, 255, 0.05), 
+                0 45px 90px -20px rgba(0, 0, 0, 0.9),
+                inset 0 0 120px rgba(0, 0, 0, 0.8);
+            overflow: hidden;
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            align-items: center;
+            text-align: center;
+            z-index: 1;
+        }
+
+        /* HIGH-TECH MASKED GRID */
+        .grid-overlay {
+            position: absolute;
+            inset: 0;
+            background-image: 
+                linear-gradient(rgba(255, 255, 255, 0.02) 1px, transparent 1px),
+                linear-gradient(90deg, rgba(255, 255, 255, 0.02) 1px, transparent 1px);
+            background-size: 44px 44px;
+            background-position: center center;
+            mask-image: radial-gradient(circle at center, black 15%, transparent 75%);
+            -webkit-mask-image: radial-gradient(circle at center, black 15%, transparent 75%);
+            z-index: 1;
+            pointer-events: none;
+        }
+
+        /* STATIC LUXURY BACKGROUND ORBS */
+        .ambient-light {
+            position: absolute;
+            border-radius: 50%;
+            pointer-events: none;
+            z-index: 0;
+            mix-blend-mode: screen;
+            filter: blur(140px);
+        }
+
+        .light-left {
+            top: -25%; left: -10%;
+            width: 900px; height: 900px;
+            background: radial-gradient(circle, rgba(59, 130, 246, 0.14) 0%, transparent 65%);
+        }
+
+        .light-right {
+            bottom: -30%; right: -15%;
+            width: 1100px; height: 1000px;
+            background: radial-gradient(circle, rgba(45, 212, 191, 0.12) 0%, transparent 60%);
+        }
+
+        /* MAIN CONTENT HOLDER */
+        .content-wrapper {
+            position: relative;
+            z-index: 10;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            width: 100%;
+            max-width: 1100px;
+            padding: 0 40px;
+        }
+
+        /* SCREENSHOT-MATCHED PREMIUM TURQUOISE BADGE */
+        .badge {
+            background: linear-gradient(180deg, rgba(45, 212, 191, 0.05) 0%, rgba(45, 212, 191, 0.01) 100%);
+            backdrop-filter: blur(16px);
+            -webkit-backdrop-filter: blur(16px);
+            border: 1px solid rgba(45, 212, 191, 0.25);
+            padding: 9px 24px;
+            border-radius: 100px;
+            font-size: 13px;
+            font-weight: 700;
+            letter-spacing: 1.5px;
+            text-transform: uppercase;
+            color: var(--accent-teal);
+            margin-bottom: 45px;
+            display: inline-flex;
+            align-items: center;
+            gap: 12px;
+            box-shadow: 0 10px 30px rgba(0, 0, 0, 0.25);
+        }
+
+        .badge-dot {
+            width: 7px; height: 7px;
+            background-color: var(--accent-teal);
+            border-radius: 50%;
+            box-shadow: 0 0 12px var(--accent-teal), 0 0 4px var(--accent-teal);
+        }
+
+        /* SINGLE LINE FULLY GRADIENT TYPOGRAPHY */
+        h1 {
+            font-family: 'Space Grotesk', sans-serif;
+            font-size: 115px;
+            font-weight: 700;
+            letter-spacing: -3.5px;
+            line-height: 1.1;
+            margin-bottom: 32px;
+            white-space: nowrap;
+            background: linear-gradient(
+                95deg, 
+                #3b82f6 15%, 
+                #2dd4bf 85%
+            );
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            display: inline-block;
+        }
+
+        .subtitle {
+            font-size: 20px;
+            font-weight: 400;
+            color: var(--text-muted);
+            line-height: 1.6;
+            max-width: 700px;
+            letter-spacing: 0.5px;
+        }
+
+        /* LINE-ACCENTED FOOTER COORDINATES */
+        .metadata-footer {
+            position: absolute;
+            bottom: 45px; left: 65px; right: 65px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            z-index: 10;
+        }
+
+        .meta-item {
+            font-size: 13px;
+            font-weight: 700;
+            letter-spacing: 3px;
+            text-transform: uppercase;
+            color: #4f5e75;
+            display: flex;
+            align-items: center;
+            gap: 16px;
+        }
+        
+        .meta-left::before {
+            content: '';
+            display: block;
+            width: 32px; height: 1px;
+            background: linear-gradient(90deg, var(--accent-blue), transparent);
+        }
+
+        .meta-right::after {
+            content: '';
+            display: block;
+            width: 32px; height: 1px;
+            background: linear-gradient(270deg, var(--accent-teal), transparent);
+        }
+    </style>
+</head>
+<body>
+    <div class="slide-container">
+        <div class="grid-overlay"></div>
+        
+        <div class="ambient-light light-left"></div>
+        <div class="ambient-light light-right"></div>
+
+        <div class="content-wrapper">
+            <div class="badge">
+                <span class="badge-dot"></span>TRANSACTION-GRADE AI
+            </div>
+            
+            <h1>ResolveFlow AI</h1>
+            
+            <p class="subtitle">A customer-care agent that resolves complex issues<br>instead of just replying to them.</p>
+        </div>
+
+        <div class="metadata-footer">
+            <div class="meta-item meta-left">Ragnarok, IIT Madras</div>
+            <div class="meta-item meta-right">Customer care bot</div>
+        </div>
+    </div>
+</body>
+</html>
